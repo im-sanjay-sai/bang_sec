@@ -1,8 +1,10 @@
 import { NavigationArrowIcon } from "@phosphor-icons/react";
 
 import type { MissionReport } from "../domain/types";
+import type { MapVisualModeId } from "../map/mapConfig";
 import { getMapSurface, getVisibleLayerIds, type MapSurfaceDefinition } from "../map/mapSurfaces";
 import { DeckMapSurface } from "./DeckMapSurface";
+import { MapModeSwitcher } from "./MapModeSwitcher";
 import { MapSurfaceSwitcher } from "./MapSurfaceSwitcher";
 import { PanelTitle } from "./PanelTitle";
 import { Badge } from "./primitives/Badge";
@@ -12,6 +14,8 @@ interface DeckMapSurfaceStackProps {
   activeLayerIds: string[];
   activeMapSurfaceId: string;
   currentReport: MissionReport | null;
+  mapMode: MapVisualModeId;
+  onMapModeChange(mode: MapVisualModeId): void;
   onSurfaceChange(surfaceId: string): void;
   surfaces: MapSurfaceDefinition[];
 }
@@ -27,6 +31,8 @@ export function DeckMapSurfaceStack({
   activeLayerIds,
   activeMapSurfaceId,
   currentReport,
+  mapMode,
+  onMapModeChange,
   onSurfaceChange,
   surfaces,
 }: DeckMapSurfaceStackProps) {
@@ -50,6 +56,7 @@ export function DeckMapSurfaceStack({
             <DeckMapSurface
               active={surface.id === activeSurface.id}
               activeLayerIds={surfaceLayerIds}
+              mapMode={mapMode}
               key={surface.id}
               report={report}
               surface={surface}
@@ -93,8 +100,9 @@ export function DeckMapSurfaceStack({
         <div className="pointer-events-none flex items-center gap-ui-xs bg-background/50 px-ui-xs py-ui-xxs font-mono text-[10px] uppercase text-muted-foreground">
           <NavigationArrowIcon size={13} className="text-terminal" weight="bold" />
           <span className="h-px w-16 bg-border" />
-          <span>Interactive Deck.gl / Mapbox</span>
+          <span>Interactive Deck.gl / Mapbox 3D</span>
         </div>
+        <MapModeSwitcher activeMode={mapMode} onModeChange={onMapModeChange} />
         <MapSurfaceSwitcher
           activeMapSurfaceId={activeSurface.id}
           onSurfaceChange={onSurfaceChange}

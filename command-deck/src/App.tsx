@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { ActivityStream } from "./components/ActivityStream";
 import { AgentRail } from "./components/AgentRail";
@@ -9,9 +9,11 @@ import { TacticalMap } from "./components/TacticalMap";
 import { TopBar } from "./components/TopBar";
 import { Divider } from "./components/primitives/Divider";
 import { useCommandDeck } from "./hooks/useCommandDeck";
+import type { MapVisualModeId } from "./map/mapConfig";
 
 export function App() {
   const deck = useCommandDeck();
+  const [mapMode, setMapMode] = useState<MapVisualModeId>("dark");
 
   useEffect(() => {
     const syncVisualViewportHeight = () => {
@@ -47,6 +49,8 @@ export function App() {
             <TacticalMap
               activeLayerIds={deck.activeLayerIds}
               activeMapSurfaceId={deck.activeMapSurfaceId}
+              mapMode={mapMode}
+              onMapModeChange={setMapMode}
               onSurfaceChange={deck.setActiveMapSurfaceId}
               report={deck.report}
               surfaces={deck.surfaces}

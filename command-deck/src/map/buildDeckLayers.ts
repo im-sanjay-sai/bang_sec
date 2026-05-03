@@ -1,8 +1,9 @@
 import type { Layer, PickingInfo } from "@deck.gl/core";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
-import { GeoJsonLayer, PathLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { ColumnLayer, GeoJsonLayer, PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 
 import type { CollectorSource, Finding, MapLayer, MissionReport, MissionTarget } from "../domain/types";
+import type { MapVisualModeId } from "./mapConfig";
 
 type LngLat = [number, number];
 
@@ -27,6 +28,13 @@ type PathDatum = TooltipRecord & {
 type HeatDatum = {
   position: LngLat;
   weight: number;
+};
+
+type SignalColumnDatum = TooltipRecord & {
+  position: LngLat;
+  elevation: number;
+  fillColor: Color;
+  lineColor: Color;
 };
 
 type PolygonFeature = {
@@ -55,8 +63,9 @@ export function buildDeckLayers(params: {
   activeLayerIds: string[];
   report: MissionReport;
   target: MissionTarget;
+  visualMode?: MapVisualModeId;
 }): Layer[] {
-  const { activeLayerIds, report, target } = params;
+  const { activeLayerIds, report, target, visualMode = "dark" } = params;
   const layers: Layer[] = [buildTargetRadiusLayer(target), buildTargetMarkerLayer(target)];
 
   for (const layer of report.layers) {
@@ -73,6 +82,10 @@ export function buildDeckLayers(params: {
   const findingLayer = buildFindingMarkerLayer(report.findings);
   if (findingLayer) {
     layers.push(findingLayer);
+  }
+
+  if (visualMode === "terrain" || visualMode === "urban3d") {
+    layers.push(buildSignalColumnLayer(report.findings, target, visualMode));
   }
 
   return layers;
@@ -400,6 +413,70 @@ function buildFindingMarkerLayer(findings: Finding[]) {
     pickable: true,
     autoHighlight: true,
   });
+}
+
+function buildSignalColumnLayer(findings: Finding[], target: MissionTarget, visualMode: MapVisualModeId) {
+  const findingsWithLocation = findings.filter(
+    (finding) => typeof finding.lat === "number" && typeof finding.lon === "number"
+  );
+  const data: SignalColumnDatum[] =
+    findingsWithLocation.length > 0
+      ? findingsWithLocation.map((finding) => {
+          const severity = getSeverityWeight(finding.severity);
+          const color = SOURCE_COLORS[finding.source];
+
+          return {
+            position: [finding.lon!, finding.lat!] as LngLat,
+            elevation: 800 + severity * 720,
+            fillColor: [color[0], color[1], color[2], visualMode === "urban3d" ? 170 : 125],
+            lineColor: [255, 255, 255, 165],
+            label: finding.title,
+            detail: `${finding.source.toUpperCase()} - ${finding.severity.toUpperCase()} vertical signal`,
+          };
+        })
+      : [
+          {
+            position: [target.lon, target.lat],
+            elevation: 1600,
+            fillColor: [220, 253, 56, visualMode === "urban3d" ? 155 : 115],
+            lineColor: [255, 255, 255, 165],
+            label: target.name,
+            detail: "Target focus signal column",
+          },
+        ];
+
+  return new ColumnLayer<SignalColumnDatum>({
+    id: `${target.id}-signal-columns-${visualMode}`,
+    data,
+    autoHighlight: true,
+    coverage: visualMode === "urban3d" ? 0.82 : 0.7,
+    diskResolution: 6,
+    elevationScale: visualMode === "urban3d" ? 1 : 0.72,
+    extruded: true,
+    getElevation: (d) => d.elevation,
+    getFillColor: (d) => d.fillColor,
+    getLineColor: (d) => d.lineColor,
+    getPosition: (d) => d.position,
+    lineWidthMinPixels: 1,
+    pickable: true,
+    radius: visualMode === "urban3d" ? 260 : 360,
+    stroked: true,
+    wireframe: true,
+  });
+}
+
+function getSeverityWeight(severity: Finding["severity"]) {
+  switch (severity) {
+    case "critical":
+      return 4;
+    case "high":
+      return 3;
+    case "medium":
+      return 2;
+    case "low":
+    default:
+      return 1;
+  }
 }
 
 function buildCircleCoordinates(center: LngLat, radiusKm: number, steps = 56): LngLat[] {
