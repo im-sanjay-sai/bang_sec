@@ -270,9 +270,33 @@ const findingsByTarget: Record<string, Finding[]> = {
   ]
 };
 
-export function createMockReport(targetId: string): MissionReport {
-  const target = targets.find((item) => item.id === targetId) ?? targets[0];
-  const findings = findingsByTarget[target.id] ?? findingsByTarget["fort-liberty"];
+function buildGenericFindings(target: MissionTarget): Finding[] {
+  return [
+    {
+      id: `${target.id}-public-1`,
+      source: "exa",
+      severity: "medium",
+      title: "Public context requires review",
+      summary: "Ad hoc location lookup created a mock public-source review item for command triage.",
+      evidence: "Mapbox geocoded location",
+      lat: target.lat,
+      lon: target.lon,
+      status: "new",
+    },
+    {
+      id: `${target.id}-revisit-1`,
+      source: "satellite",
+      severity: "low",
+      title: "Generic revisit envelope staged",
+      summary: "Synthetic revisit and movement layers were generated around the requested location.",
+      evidence: "Synthetic fallback model",
+      status: "reviewing",
+    },
+  ];
+}
+
+export function createMockReportForTarget(target: MissionTarget): MissionReport {
+  const findings = findingsByTarget[target.id] ?? buildGenericFindings(target);
   const highCount = findings.filter((finding) => finding.severity === "high").length;
   const mediumCount = findings.filter((finding) => finding.severity === "medium").length;
   const aggregate = Math.min(92, 42 + highCount * 17 + mediumCount * 8);
@@ -305,4 +329,9 @@ export function createMockReport(targetId: string): MissionReport {
       state: "not_synced"
     }
   };
+}
+
+export function createMockReport(targetId: string): MissionReport {
+  const target = targets.find((item) => item.id === targetId) ?? targets[0];
+  return createMockReportForTarget(target);
 }

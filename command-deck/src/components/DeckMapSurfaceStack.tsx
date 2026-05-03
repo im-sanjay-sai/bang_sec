@@ -1,7 +1,7 @@
 import { NavigationArrowIcon } from "@phosphor-icons/react";
 
 import type { MissionReport } from "../domain/types";
-import { getMapSurface, getVisibleLayerIds, mapSurfaces } from "../map/mapSurfaces";
+import { getMapSurface, getVisibleLayerIds, type MapSurfaceDefinition } from "../map/mapSurfaces";
 import { DeckMapSurface } from "./DeckMapSurface";
 import { MapSurfaceSwitcher } from "./MapSurfaceSwitcher";
 import { PanelTitle } from "./PanelTitle";
@@ -13,6 +13,7 @@ interface DeckMapSurfaceStackProps {
   activeMapSurfaceId: string;
   currentReport: MissionReport | null;
   onSurfaceChange(surfaceId: string): void;
+  surfaces: MapSurfaceDefinition[];
 }
 
 const toneClass = {
@@ -27,8 +28,9 @@ export function DeckMapSurfaceStack({
   activeMapSurfaceId,
   currentReport,
   onSurfaceChange,
+  surfaces,
 }: DeckMapSurfaceStackProps) {
-  const activeSurface = getMapSurface(activeMapSurfaceId);
+  const activeSurface = getMapSurface(activeMapSurfaceId, surfaces);
   const activeReport =
     currentReport?.target.id === activeSurface.id ? currentReport : activeSurface.report;
   const activeLayers = activeReport.layers.filter((layer) => activeLayerIds.includes(layer.id));
@@ -39,7 +41,7 @@ export function DeckMapSurfaceStack({
   return (
     <section className="absolute inset-0 isolate overflow-hidden bg-black">
       <div className="absolute inset-0">
-        {mapSurfaces.map((surface) => {
+        {surfaces.map((surface) => {
           const report = currentReport?.target.id === surface.id ? currentReport : surface.report;
           const surfaceLayerIds =
             surface.id === activeSurface.id ? activeLayerIds : getVisibleLayerIds(report);
@@ -96,7 +98,7 @@ export function DeckMapSurfaceStack({
         <MapSurfaceSwitcher
           activeMapSurfaceId={activeSurface.id}
           onSurfaceChange={onSurfaceChange}
-          surfaces={mapSurfaces}
+          surfaces={surfaces}
         />
       </div>
 

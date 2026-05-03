@@ -3,12 +3,20 @@
 #
 
 import os
+from typing import Any, Mapping
 
 from dotenv import load_dotenv
 from loguru import logger
 
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import TTSSpeakFrame
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
+    Frame,
+    TTSSpeakFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -21,30 +29,196 @@ from pipecat.processors.frameworks.rtvi import RTVIProcessor
 from pipecat.runner.types import DailyRunnerArguments, RunnerArguments
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService, LiveOptions
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
+from pipecat.turns.user_mute.base_user_mute_strategy import BaseUserMuteStrategy
 
 load_dotenv(override=True)
 
 DEFAULT_CARTESIA_VOICE_ID = "ec1e269e-9ca0-402f-8a18-58e0e022355a"
 REQUIRED_VOICE_KEYS = ("DEEPGRAM_API_KEY", "OPENAI_API_KEY", "CARTESIA_API_KEY")
+VAD_PARAMS = VADParams(confidence=0.65, start_secs=0.15, stop_secs=0.35, min_volume=0.55)
+
+KNOWN_LOCATIONS = {
+    "fort-liberty": {
+        "label": "Fort Liberty",
+        "aliases": ("fort liberty", "liberty", "ft liberty", "fort bragg", "bragg"),
+    },
+    "norfolk-naval": {
+        "label": "Norfolk Naval",
+        "aliases": ("norfolk naval", "norfolk", "naval station norfolk", "naval"),
+    },
+    "creech-afb": {
+        "label": "Creech AFB",
+        "aliases": ("creech afb", "creech", "creech air force base", "air force base creech"),
+    },
+}
+
+SET_ACTIVE_LOCATION_TOOL = FunctionSchema(
+    name="set_active_location",
+    description=(
+        "Move the command-deck map to a location. Use this whenever the operator asks "
+        "to show, open, focus, switch, change location, go to, analyze, or asks about one "
+        "of the known locations or any other place name."
+    ),
+    properties={
+        "location_id": {
+            "type": "string",
+            "enum": list(KNOWN_LOCATIONS.keys()),
+            "description": "Optional known command-deck location id when the place is one of the known targets.",
+        },
+        "location_name": {
+            "type": "string",
+            "description": "The exact location or place name the operator asked about.",
+        },
+        "spoken_reference": {
+            "type": "string",
+            "description": "Optional exact phrase the operator used for the location.",
+        },
+    },
+    required=["location_name"],
+)
 
 SYSTEM_PROMPT = """You are the command voice inside a Gradient Bang-style Palantir AIP cockpit.
 You help the operator triage live mission data, background agent tasks, and hackathon build work.
 Keep spoken answers short, operational, and specific. Never claim you can access Palantir,
-Pipecat, or external systems unless tool context or the operator explicitly provides it."""
+Pipecat, or external systems unless tool context or the operator explicitly provides it.
+
+Known command-deck locations:
+- fort-liberty: Fort Liberty
+- norfolk-naval: Norfolk Naval
+- creech-afb: Creech AFB
+
+When the operator asks to show, open, focus, switch, move to, change location,
+analyze, or asks about a location, call set_active_location with location_name.
+Use location_id too only when the place matches a known command-deck location."""
 
 READY_GREETING = (
     "Voice link online. I can hear you now. Give me a command for the AIP operations deck."
 )
 
 
+class FirstBotSpeechMuteStrategy(BaseUserMuteStrategy):
+    """Mute user audio until the first bot utterance completes.
+
+    This mirrors Gradient Bang's startup guard. It prevents the bot's own
+    greeting or speaker echo from being treated as the first user turn.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._first_speech_finished = False
+
+    async def process_frame(self, frame: Frame) -> bool:
+        await super().process_frame(frame)
+
+        if isinstance(frame, BotStoppedSpeakingFrame):
+            self._first_speech_finished = True
+
+        return not self._first_speech_finished
+
+
 def _missing_voice_keys() -> list[str]:
     return [key for key in REQUIRED_VOICE_KEYS if not os.getenv(key)]
 
 
-def _build_voice_pipeline(transport: DailyTransport) -> Pipeline:
+def _normalize_location_text(text: str) -> str:
+    return " ".join("".join(char.lower() if char.isalnum() else " " for char in text).split())
+
+
+def _string_arg(arguments: Mapping[str, Any], key: str) -> str | None:
+    value = arguments.get(key)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _resolve_location(arguments: Mapping[str, Any]) -> tuple[str, str] | None:
+    location_id = _string_arg(arguments, "location_id")
+    if location_id in KNOWN_LOCATIONS:
+        return location_id, KNOWN_LOCATIONS[location_id]["label"]
+
+    search_text = " ".join(
+        value
+        for key in ("location_name", "spoken_reference", "location", "target", "query")
+        if (value := _string_arg(arguments, key))
+    )
+    normalized = _normalize_location_text(search_text)
+    if not normalized:
+        return None
+
+    for candidate_id, definition in KNOWN_LOCATIONS.items():
+        aliases = (definition["label"], *definition["aliases"])
+        if any(_normalize_location_text(alias) in normalized for alias in aliases):
+            return candidate_id, definition["label"]
+
+    return None
+
+
+def _extract_location_name(arguments: Mapping[str, Any]) -> str | None:
+    for key in ("location_name", "spoken_reference", "location", "target", "query"):
+        value = _string_arg(arguments, key)
+        if value:
+            return value
+
+    return None
+
+
+def _make_set_active_location_handler(rtvi: RTVIProcessor):
+    async def handle_set_active_location(params: FunctionCallParams):
+        location = _resolve_location(params.arguments)
+        location_name = _extract_location_name(params.arguments)
+
+        if location:
+            location_id, label = location
+            await rtvi.send_server_message(
+                {
+                    "type": "command-deck.location",
+                    "surfaceId": location_id,
+                    "targetId": location_id,
+                    "label": label,
+                    "text": f"Moving map to {label}.",
+                }
+            )
+            await params.result_callback(
+                {
+                    "success": True,
+                    "surfaceId": location_id,
+                    "targetId": location_id,
+                    "label": label,
+                }
+            )
+            return
+
+        if location_name:
+            await rtvi.send_server_message(
+                {
+                    "type": "command-deck.location-request",
+                    "locationName": location_name,
+                    "text": f"Looking up {location_name}.",
+                }
+            )
+            await params.result_callback(
+                {
+                    "success": True,
+                    "locationName": location_name,
+                    "message": f"The command deck is looking up {location_name}.",
+                }
+            )
+            return
+
+        await params.result_callback(
+            {
+                "success": False,
+                "error": "No location name was provided.",
+                "known_location_ids": list(KNOWN_LOCATIONS.keys()),
+            }
+        )
+
+    return handle_set_active_location
+
+
+def _build_voice_pipeline(transport: DailyTransport, rtvi: RTVIProcessor) -> Pipeline:
     missing = _missing_voice_keys()
     if missing:
         raise RuntimeError(
@@ -70,6 +244,7 @@ def _build_voice_pipeline(transport: DailyTransport) -> Pipeline:
             max_tokens=int(os.getenv("OPENAI_MAX_TOKENS", "180")),
         ),
     )
+    llm.register_function("set_active_location", _make_set_active_location_handler(rtvi))
     tts = CartesiaTTSService(
         api_key=os.environ["CARTESIA_API_KEY"],
         voice_id=os.getenv("CARTESIA_VOICE_ID", DEFAULT_CARTESIA_VOICE_ID),
@@ -82,15 +257,21 @@ def _build_voice_pipeline(transport: DailyTransport) -> Pipeline:
                 "role": "system",
                 "content": os.getenv("COMMAND_DECK_AGENT_PROMPT", SYSTEM_PROMPT),
             }
-        ]
+        ],
+        tools=ToolsSchema(standard_tools=[SET_ACTIVE_LOCATION_TOOL]),
     )
+    startup_mute = FirstBotSpeechMuteStrategy()
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(),
-            user_turn_stop_timeout=4.0,
+            vad_analyzer=SileroVADAnalyzer(params=VAD_PARAMS),
+            user_mute_strategies=[startup_mute],
+            user_turn_stop_timeout=1.2,
+            audio_idle_timeout=0.6,
         ),
     )
+    if hasattr(user_aggregator, "_user_is_muted"):
+        user_aggregator._user_is_muted = True
 
     return Pipeline(
         [
@@ -117,15 +298,15 @@ def _build_unconfigured_pipeline(transport: DailyTransport) -> Pipeline:
 async def run_bot(transport):
     """Run an RTVI-compatible Daily voice pipeline."""
     voice_config_error = None
+    rtvi = RTVIProcessor(transport=transport)
     try:
-        pipeline = _build_voice_pipeline(transport)
+        pipeline = _build_voice_pipeline(transport, rtvi)
         logger.info("Command-deck voice pipeline configured with STT, LLM, and TTS")
     except RuntimeError as error:
         voice_config_error = str(error)
         pipeline = _build_unconfigured_pipeline(transport)
         logger.warning(voice_config_error)
 
-    rtvi = RTVIProcessor(transport=transport)
     task = PipelineTask(
         pipeline,
         params=PipelineParams(

@@ -26,32 +26,49 @@ export const mapSurfaces: MapSurfaceDefinition[] = targets.map((target, index) =
 
 export const defaultMapSurfaceId = mapSurfaces[0]?.id ?? "fort-liberty";
 
-export function getMapSurface(surfaceId: string): MapSurfaceDefinition {
-  return mapSurfaces.find((surface) => surface.id === surfaceId) ?? mapSurfaces[0];
+export function getMapSurface(surfaceId: string, surfaces = mapSurfaces): MapSurfaceDefinition {
+  return surfaces.find((surface) => surface.id === surfaceId) ?? surfaces[0] ?? mapSurfaces[0];
 }
 
 export function getVisibleLayerIds(report: MissionReport): string[] {
   return report.layers.filter((layer) => layer.visible).map((layer) => layer.id);
 }
 
+const surfaceAliases: Record<string, string[]> = {
+  "fort-liberty": ["fort liberty", "liberty", "ft liberty", "fort bragg", "bragg"],
+  "norfolk-naval": ["norfolk naval", "norfolk", "naval station norfolk", "naval"],
+  "creech-afb": ["creech afb", "creech", "creech air force base", "air force base creech"],
+};
+
+const mapIntentPatterns = [
+  /\b(map|surface|show|display|switch|open|focus|zoom|navigate|move|location|about|check|inspect|look)\b/,
+  /\bgo\s+to\b/,
+  /\bgoto\b/,
+  /\bchange\s+(?:the\s+)?location\b/,
+  /\bshow\s+me\b/,
+];
+
+const locationQueryPatterns = [
+  /\b(?:go\s+to|goto|move\s+to|navigate\s+to|open|focus\s+(?:on\s+)?|zoom\s+(?:to|into)|show\s+me|show|display|switch\s+to|change\s+(?:the\s+)?location\s+to|set\s+(?:the\s+)?location\s+to|what\s+about|about|check|inspect|look\s+at|analyze|assess)\s+(.+)$/i,
+  /\bwhere\s+is\s+(.+)$/i,
+];
+
+export function resolveTargetCommand(command: string): string | null {
+  const normalized = normalizeCommand(command);
+  const byName = mapSurfaces.find((surface) => surfaceMatchesCommand(surface, normalized));
+
+  return byName?.target.id ?? null;
+}
+
 export function resolveMapSurfaceCommand(command: string): string | null {
-  const normalized = command.toLowerCase();
-  const wantsMap =
-    normalized.includes("map") ||
-    normalized.includes("surface") ||
-    normalized.includes("show") ||
-    normalized.includes("display") ||
-    normalized.includes("switch");
+  const normalized = normalizeCommand(command);
+  const wantsMap = mapIntentPatterns.some((pattern) => pattern.test(normalized));
 
   if (!wantsMap) {
     return null;
   }
 
-  const byName = mapSurfaces.find((surface) => {
-    const targetName = surface.target.name.toLowerCase();
-    const shortName = targetName.split(/\s+/)[0];
-    return normalized.includes(targetName) || normalized.includes(shortName);
-  });
+  const byName = mapSurfaces.find((surface) => surfaceMatchesCommand(surface, normalized));
   if (byName) {
     return byName.id;
   }
@@ -78,4 +95,62 @@ export function resolveMapSurfaceCommand(command: string): string | null {
   }
 
   return null;
+}
+
+export function extractLocationQuery(command: string): string | null {
+  const normalized = normalizeCommand(command);
+  if (!normalized) {
+    return null;
+  }
+
+  for (const pattern of locationQueryPatterns) {
+    const match = normalized.match(pattern);
+    const candidate = cleanupLocationQuery(match?.[1] ?? "");
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  const hasKnownCommand =
+    /\b(push|sync|review|compare|aip|finding|findings|help|status|voice|microphone|mic)\b/.test(normalized);
+  const looksLikeBarePlace =
+    !hasKnownCommand &&
+    normalized.split(/\s+/).length <= 5 &&
+    normalized.length >= 3 &&
+    !/^(hi|hello|hey|thanks|thank you|yes|no|okay|ok|stop|cancel)$/.test(normalized);
+
+  return looksLikeBarePlace ? cleanupLocationQuery(normalized) : null;
+}
+
+function normalizeCommand(command: string): string {
+  return command.toLowerCase().replace(/[^\w\s-]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function cleanupLocationQuery(query: string): string | null {
+  const cleaned = query
+    .replace(/\b(?:map|surface|location|please|now|for me|here)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned.length >= 3 ? cleaned : null;
+}
+
+function surfaceMatchesCommand(surface: MapSurfaceDefinition, normalizedCommand: string): boolean {
+  return getSurfaceAliases(surface).some((alias) => hasPhrase(normalizedCommand, alias));
+}
+
+function getSurfaceAliases(surface: MapSurfaceDefinition): string[] {
+  const targetName = surface.target.name.toLowerCase();
+  const shortName = targetName.split(/\s+/)[0];
+  return [targetName, shortName, ...(surfaceAliases[surface.id] ?? [])];
+}
+
+function hasPhrase(normalizedCommand: string, phrase: string): boolean {
+  const normalizedPhrase = normalizeCommand(phrase);
+  if (!normalizedPhrase) {
+    return false;
+  }
+
+  const escaped = normalizedPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  return new RegExp(`(^|\\s)${escaped}(?=\\s|$)`).test(normalizedCommand);
 }

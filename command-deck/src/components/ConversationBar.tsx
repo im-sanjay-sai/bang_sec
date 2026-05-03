@@ -1,6 +1,6 @@
-import { FormEvent, useRef, useState } from "react";
-import { MicrophoneIcon, MicrophoneSlashIcon, PaperPlaneRightIcon } from "@phosphor-icons/react";
-import { RTVIEvent } from "@pipecat-ai/client-js";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { MicrophoneIcon, MicrophoneSlashIcon, PaperPlaneRightIcon, PhoneDisconnectIcon } from "@phosphor-icons/react";
+import { RTVIEvent, type TranscriptData } from "@pipecat-ai/client-js";
 import {
   usePipecatClient,
   usePipecatClientMicControl,
@@ -21,24 +21,75 @@ interface ConversationBarProps {
   className?: string;
   busy: boolean;
   messages: ConversationMessage[];
+  onLocationChange?(surfaceId: string): void;
+  onLocationRequest?(locationName: string): Promise<unknown> | unknown;
   onSend(text: string): Promise<void>;
 }
 
-export function ConversationBar({ className, busy, messages, onSend }: ConversationBarProps) {
+export function ConversationBar({ className, busy, messages, onLocationChange, onLocationRequest, onSend }: ConversationBarProps) {
   const pipecatClient = usePipecatClient();
   const transportState = usePipecatClientTransportState();
   const { enableMic, isMicEnabled } = usePipecatClientMicControl();
   const { messages: pipecatMessages } = usePipecatConversation();
   const inputRef = useRef<HTMLInputElement>(null);
+  const lastVoiceCommandRef = useRef<string | null>(null);
   const [draft, setDraft] = useState("");
   const [serverMessages, setServerMessages] = useState<ConversationMessage[]>([]);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceConnecting, setVoiceConnecting] = useState(false);
+  const [remoteMuted, setRemoteMuted] = useState(false);
 
   const isConnecting = voiceConnecting || ["authenticating", "authenticated", "connecting", "connected", "initializing"].includes(transportState);
   const isConnected = transportState === "ready";
 
+  useEffect(() => {
+    if (!isConnected) {
+      setRemoteMuted(false);
+      lastVoiceCommandRef.current = null;
+    }
+  }, [isConnected]);
+
+  useRTVIClientEvent(RTVIEvent.UserMuteStarted, () => {
+    setRemoteMuted(true);
+  });
+
+  useRTVIClientEvent(RTVIEvent.UserMuteStopped, () => {
+    setRemoteMuted(false);
+  });
+
+  useRTVIClientEvent(RTVIEvent.UserTranscript, (transcript: TranscriptData) => {
+    if (!transcript.final) {
+      return;
+    }
+
+    const text = transcript.text.trim();
+    if (!text) {
+      return;
+    }
+
+    const fingerprint = `${transcript.timestamp}:${text}`;
+    if (lastVoiceCommandRef.current === fingerprint) {
+      return;
+    }
+
+    lastVoiceCommandRef.current = fingerprint;
+    void onSend(text);
+  });
+
+  useRTVIClientEvent(RTVIEvent.Error, (message) => {
+    setVoiceError(textFromUnknown(message.data) ?? "Pipecat voice pipeline reported an error.");
+  });
+
   useRTVIClientEvent(RTVIEvent.ServerMessage, (payload: unknown) => {
+    const locationId = extractServerLocationId(payload);
+    if (locationId) {
+      onLocationChange?.(locationId);
+    }
+    const locationName = extractServerLocationName(payload);
+    if (!locationId && locationName) {
+      void onLocationRequest?.(locationName);
+    }
+
     const text = extractServerMessageText(payload);
     if (!text) {
       return;
@@ -99,6 +150,9 @@ export function ConversationBar({ className, busy, messages, onSend }: Conversat
     }
 
     if (isConnected) {
+      if (remoteMuted) {
+        return;
+      }
       enableMic(!isMicEnabled);
       return;
     }
@@ -121,12 +175,32 @@ export function ConversationBar({ className, busy, messages, onSend }: Conversat
         throw new Error(formatPipecatStartError(payload, response.status));
       }
 
+      setRemoteMuted(true);
       await pipecatClient.connect(payload);
       enableMic(true);
     } catch (error) {
       setVoiceError(error instanceof Error ? error.message : "Pipecat voice connection failed.");
+      setRemoteMuted(false);
     } finally {
       setVoiceConnecting(false);
+    }
+  }
+
+  async function handleVoiceDisconnect() {
+    if (!pipecatClient) {
+      return;
+    }
+
+    setVoiceError(null);
+    setVoiceConnecting(false);
+    setRemoteMuted(false);
+    setServerMessages([]);
+    lastVoiceCommandRef.current = null;
+
+    try {
+      await pipecatClient.disconnect();
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : "Pipecat disconnect failed.");
     }
   }
 
@@ -164,9 +238,9 @@ export function ConversationBar({ className, busy, messages, onSend }: Conversat
 
       <form className="flex items-center gap-ui-xxs" onSubmit={handleSubmit}>
         <Button
-          aria-label={isConnected ? "Toggle Pipecat microphone" : "Connect Pipecat voice"}
+          aria-label={isConnected && remoteMuted ? "Microphone muted by Pipecat, please wait" : isConnected ? "Toggle Pipecat microphone" : "Connect Pipecat voice"}
           className="h-9 min-w-9 px-0 @md/main:min-w-30 @md/main:px-3"
-          disabled={isConnecting}
+          disabled={isConnecting || (isConnected && remoteMuted)}
           isLoading={isConnecting}
           loader="icon"
           onClick={handleVoiceClick}
@@ -174,7 +248,9 @@ export function ConversationBar({ className, busy, messages, onSend }: Conversat
           variant={
             isConnecting
               ? "micLoading"
-              : isConnected
+              : isConnected && remoteMuted
+                ? "micRemoteMuted"
+                : isConnected
                 ? isMicEnabled
                   ? "micEnabled"
                   : "micDisabled"
@@ -187,9 +263,21 @@ export function ConversationBar({ className, busy, messages, onSend }: Conversat
             <MicrophoneIcon weight="bold" />
           )}
           <span className="hidden @md/main:inline">
-            {isConnecting ? "Connecting" : isConnected ? (isMicEnabled ? "Live voice" : "Muted") : "Connect voice"}
+            {isConnecting ? "Connecting" : isConnected && remoteMuted ? "Please wait" : isConnected ? (isMicEnabled ? "Live voice" : "Muted") : "Connect voice"}
           </span>
         </Button>
+        {isConnected ? (
+          <Button
+            aria-label="End Pipecat voice"
+            className="h-9 min-w-9 px-0"
+            onClick={handleVoiceDisconnect}
+            size="icon"
+            type="button"
+            variant="outline"
+          >
+            <PhoneDisconnectIcon weight="bold" />
+          </Button>
+        ) : null}
         <div className="relative min-w-0 flex-1">
           <Input
             ref={inputRef}
@@ -225,7 +313,7 @@ function formatPipecatStartError(payload: unknown, status: number): string {
     return fallback;
   }
 
-  for (const key of ["detail", "error", "message", "info"]) {
+  for (const key of ["text", "detail", "error", "message", "info"]) {
     const text = textFromUnknown(payload[key]);
     if (text) {
       return text;
@@ -244,7 +332,7 @@ function textFromUnknown(value: unknown): string | null {
     return null;
   }
 
-  for (const key of ["detail", "error", "message", "info"]) {
+  for (const key of ["text", "detail", "error", "message", "info"]) {
     const nested = textFromUnknown(value[key]);
     if (nested) {
       return nested;
@@ -259,7 +347,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function extractServerMessageText(payload: unknown): string | null {
-  const data = isRecord(payload) && "data" in payload ? payload.data : payload;
+  const data = extractServerMessageData(payload);
   const text = textFromUnknown(data);
   if (text) {
     return text;
@@ -275,6 +363,30 @@ function extractServerMessageText(payload: unknown): string | null {
   }
 
   return null;
+}
+
+function extractServerLocationId(payload: unknown): string | null {
+  const data = extractServerMessageData(payload);
+  if (!isRecord(data) || data.type !== "command-deck.location") {
+    return null;
+  }
+
+  const locationId = data.surfaceId ?? data.targetId;
+  return typeof locationId === "string" && locationId.length > 0 ? locationId : null;
+}
+
+function extractServerLocationName(payload: unknown): string | null {
+  const data = extractServerMessageData(payload);
+  if (!isRecord(data) || data.type !== "command-deck.location-request") {
+    return null;
+  }
+
+  const locationName = data.locationName ?? data.query ?? data.label;
+  return typeof locationName === "string" && locationName.length > 0 ? locationName : null;
+}
+
+function extractServerMessageData(payload: unknown): unknown {
+  return isRecord(payload) && "data" in payload ? payload.data : payload;
 }
 
 function mapPipecatMessage(message: PipecatConversationMessage, index: number): ConversationMessage {

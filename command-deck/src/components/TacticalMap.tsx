@@ -1,4 +1,5 @@
 import type { MissionReport, MissionTarget } from "../domain/types";
+import type { MapSurfaceDefinition } from "../map/mapSurfaces";
 import { DeckMapSurfaceStack } from "./DeckMapSurfaceStack";
 
 interface TacticalMapProps {
@@ -6,6 +7,7 @@ interface TacticalMapProps {
   activeMapSurfaceId: string;
   onSurfaceChange(surfaceId: string): void;
   report: MissionReport | null;
+  surfaces: MapSurfaceDefinition[];
   target: MissionTarget;
 }
 
@@ -14,6 +16,7 @@ export function TacticalMap({
   activeMapSurfaceId,
   onSurfaceChange,
   report,
+  surfaces,
 }: TacticalMapProps) {
   return (
     <DeckMapSurfaceStack
@@ -21,6 +24,7 @@ export function TacticalMap({
       activeMapSurfaceId={activeMapSurfaceId}
       currentReport={report}
       onSurfaceChange={onSurfaceChange}
+      surfaces={surfaces}
     />
   );
 }

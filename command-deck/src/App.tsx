@@ -49,13 +49,20 @@ export function App() {
               activeMapSurfaceId={deck.activeMapSurfaceId}
               onSurfaceChange={deck.setActiveMapSurfaceId}
               report={deck.report}
+              surfaces={deck.surfaces}
               target={deck.selectedTarget}
             />
             <ActivityStream events={deck.events} />
           </section>
 
           <footer className="command-footer-dock">
-            <ConversationBar messages={deck.messages} onSend={deck.sendCommand} busy={deck.busy} />
+            <ConversationBar
+              messages={deck.messages}
+              onLocationChange={deck.setActiveMapSurfaceId}
+              onLocationRequest={deck.focusLocationByName}
+              onSend={deck.sendCommand}
+              busy={deck.busy}
+            />
             <div className="relative hidden h-full overflow-hidden bracket-left bracket-offset-0 bracket-1 bracket-input bg-background @3xl/main:block">
               <LayerControls
                 activeLayerIds={deck.activeLayerIds}

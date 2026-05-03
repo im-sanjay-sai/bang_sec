@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { PipecatClient } from "@pipecat-ai/client-js";
-import { PipecatClientProvider } from "@pipecat-ai/client-react";
+import { PipecatClientAudio, PipecatClientProvider } from "@pipecat-ai/client-react";
 import { DailyTransport } from "@pipecat-ai/daily-transport";
 
 import { App } from "./App";
@@ -17,6 +17,7 @@ const pipecatClient = new PipecatClient({
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <PipecatClientProvider client={pipecatClient}>
+      <PipecatClientAudio />
       <App />
     </PipecatClientProvider>
   </React.StrictMode>

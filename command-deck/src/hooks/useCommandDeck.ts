@@ -1,14 +1,20 @@
 import { useCallback, useMemo, useState } from "react";
 
-import { defaultAgents, targets } from "../data/mockMission";
-import type { AgentDescriptor, ConversationMessage, MissionReport, TaskEvent } from "../domain/types";
+import { createMockReportForTarget, defaultAgents, targets } from "../data/mockMission";
+import type { AgentDescriptor, ConversationMessage, MissionReport, MissionTarget, TaskEvent } from "../domain/types";
+import { buildInitialViewState } from "../map/mapConfig";
 import {
   defaultMapSurfaceId,
+  extractLocationQuery,
   getMapSurface,
   getVisibleLayerIds,
+  mapSurfaces as baseMapSurfaces,
+  type MapSurfaceDefinition,
   resolveMapSurfaceCommand,
+  resolveTargetCommand,
 } from "../map/mapSurfaces";
 import { palantirBackend } from "../services/palantirAdapter";
+import { geocodeLocationName, type GeocodedLocation } from "../services/geocoding";
 
 const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const uid = () => crypto.randomUUID();
@@ -36,6 +42,7 @@ const bootMessages: ConversationMessage[] = [
 ];
 
 export function useCommandDeck() {
+  const [customSurfaces, setCustomSurfaces] = useState<MapSurfaceDefinition[]>([]);
   const [selectedTargetId, setSelectedTargetId] = useState(initialSurface.target.id);
   const [activeMapSurfaceId, setActiveMapSurfaceIdState] = useState(initialSurface.id);
   const [report, setReport] = useState<MissionReport | null>(initialReport);
@@ -45,9 +52,12 @@ export function useCommandDeck() {
   const [agents, setAgents] = useState<AgentDescriptor[]>(defaultAgents);
   const [busy, setBusy] = useState(false);
 
+  const surfaces = useMemo(() => [...baseMapSurfaces, ...customSurfaces], [customSurfaces]);
+  const deckTargets = useMemo(() => surfaces.map((surface) => surface.target), [surfaces]);
+
   const selectedTarget = useMemo(
-    () => targets.find((target) => target.id === selectedTargetId) ?? targets[0],
-    [selectedTargetId]
+    () => getMapSurface(selectedTargetId, surfaces).target,
+    [selectedTargetId, surfaces]
   );
 
   const addEvent = useCallback((event: Omit<TaskEvent, "id" | "at">) => {
@@ -64,7 +74,7 @@ export function useCommandDeck() {
 
   const setActiveMapSurfaceId = useCallback(
     (surfaceId: string) => {
-      const surface = getMapSurface(surfaceId);
+      const surface = getMapSurface(surfaceId, surfaces);
       setActiveMapSurfaceIdState(surface.id);
       setSelectedTargetId(surface.target.id);
       setReport(surface.report);
@@ -75,12 +85,62 @@ export function useCommandDeck() {
         message: `Displayed ${surface.label} deck.gl surface.`,
       });
     },
-    [addEvent]
+    [addEvent, surfaces]
+  );
+
+  const focusLocationByName = useCallback(
+    async (query: string) => {
+      const trimmed = query.trim();
+      if (!trimmed) {
+        return false;
+      }
+
+      const knownSurfaceId = resolveTargetCommand(trimmed) ?? resolveMapSurfaceCommand(`show ${trimmed}`);
+      if (knownSurfaceId) {
+        const surface = getMapSurface(knownSurfaceId, surfaces);
+        setActiveMapSurfaceId(surface.id);
+        addMessage({ role: "voice-agent", text: `Displaying ${surface.label} map surface.` });
+        return true;
+      }
+
+      const geocoded = await geocodeLocationName(trimmed);
+      if (!geocoded) {
+        addMessage({ role: "voice-agent", text: `I could not locate ${trimmed} on the map.` });
+        return false;
+      }
+
+      const existingSurface = surfaces.find((surface) => isSameGeocodedLocation(surface, geocoded));
+      if (existingSurface) {
+        setActiveMapSurfaceId(existingSurface.id);
+        addMessage({ role: "voice-agent", text: `Displaying ${existingSurface.label} map surface.` });
+        return true;
+      }
+
+      const surface = buildAdHocSurface(geocoded, baseMapSurfaces.length + customSurfaces.length + 1);
+      setCustomSurfaces((current) =>
+        current.some((item) => item.id === surface.id)
+          ? current
+          : [...current, { ...surface, order: baseMapSurfaces.length + current.length + 1 }]
+      );
+      setActiveMapSurfaceIdState(surface.id);
+      setSelectedTargetId(surface.target.id);
+      setReport(surface.report);
+      setActiveLayerIds(getVisibleLayerIds(surface.report));
+      addEvent({
+        agent: "voice",
+        state: "complete",
+        message: `Created ad hoc map surface for ${surface.label}.`,
+      });
+      addMessage({ role: "voice-agent", text: `Displaying ${surface.label} map surface.` });
+      return true;
+    },
+    [addEvent, addMessage, customSurfaces.length, setActiveMapSurfaceId, surfaces]
   );
 
   const runAssessment = useCallback(
     async (targetId = selectedTargetId) => {
-      const target = targets.find((item) => item.id === targetId) ?? targets[0];
+      const targetSurface = surfaces.find((surface) => surface.target.id === targetId || surface.id === targetId) ?? surfaces[0];
+      const target = targetSurface.target;
       setBusy(true);
       setSelectedTargetId(target.id);
       setAgent("voice", { status: "working", currentTask: `Tasking ${target.name}` });
@@ -99,7 +159,9 @@ export function useCommandDeck() {
         await new Promise((resolve) => window.setTimeout(resolve, 360));
       }
 
-      const nextReport = await palantirBackend.runAssessment(target.id);
+      const nextReport = isBaseTarget(target.id)
+        ? await palantirBackend.runAssessment(target.id)
+        : createMockReportForTarget(target);
       setActiveMapSurfaceIdState(target.id);
       setReport(nextReport);
       setActiveLayerIds(getVisibleLayerIds(nextReport));
@@ -112,7 +174,7 @@ export function useCommandDeck() {
       });
       setBusy(false);
     },
-    [addEvent, addMessage, selectedTargetId, setAgent]
+    [addEvent, addMessage, selectedTargetId, setAgent, surfaces]
   );
 
   const syncToAip = useCallback(async () => {
@@ -165,19 +227,33 @@ export function useCommandDeck() {
       }
       addMessage({ role: "operator", text: trimmed });
       const command = trimmed.toLowerCase();
-      const matchedTarget = targets.find((target) => command.includes(target.name.toLowerCase()));
+      const matchedTargetId = resolveTargetCommand(command);
+      const matchedTarget = deckTargets.find((target) => target.id === matchedTargetId);
       const mapSurfaceId = resolveMapSurfaceCommand(command);
+      const locationQuery = extractLocationQuery(trimmed);
 
       if (mapSurfaceId) {
-        const surface = getMapSurface(mapSurfaceId);
+        const surface = getMapSurface(mapSurfaceId, surfaces);
         setActiveMapSurfaceId(surface.id);
         addMessage({ role: "voice-agent", text: `Displaying ${surface.label} map surface.` });
         return;
       }
 
       if (command.includes("analyze") || command.includes("assess")) {
+        if (!matchedTarget && locationQuery) {
+          const focused = await focusLocationByName(locationQuery);
+          if (focused) {
+            return;
+          }
+        }
         await runAssessment(matchedTarget?.id ?? selectedTargetId);
         return;
+      }
+      if (locationQuery) {
+        const focused = await focusLocationByName(locationQuery);
+        if (focused) {
+          return;
+        }
       }
       if (command.includes("push") || command.includes("sync")) {
         await syncToAip();
@@ -196,7 +272,7 @@ export function useCommandDeck() {
         text: "Command received. Available actions: analyze target, push to AIP, compare runs, review top finding."
       });
     },
-    [addMessage, askAip, reviewTopFinding, runAssessment, selectedTargetId, setActiveMapSurfaceId, syncToAip]
+    [addMessage, askAip, deckTargets, focusLocationByName, reviewTopFinding, runAssessment, selectedTargetId, setActiveMapSurfaceId, surfaces, syncToAip]
   );
 
   const toggleLayer = useCallback((layerId: string) => {
@@ -215,8 +291,10 @@ export function useCommandDeck() {
     report,
     selectedTarget,
     selectedTargetId,
-    targets,
+    surfaces,
+    targets: deckTargets,
     askAip,
+    focusLocationByName,
     reviewTopFinding,
     runAssessment,
     sendCommand,
@@ -225,4 +303,55 @@ export function useCommandDeck() {
     syncToAip,
     toggleLayer
   };
+}
+
+function isBaseTarget(targetId: string): boolean {
+  return targets.some((target) => target.id === targetId);
+}
+
+function buildAdHocSurface(location: GeocodedLocation, order: number): MapSurfaceDefinition {
+  const target = buildAdHocTarget(location);
+  const report = createMockReportForTarget(target);
+
+  return {
+    id: target.id,
+    order,
+    label: target.name,
+    target,
+    report,
+    viewState: buildInitialViewState(target),
+  };
+}
+
+function buildAdHocTarget(location: GeocodedLocation): MissionTarget {
+  return {
+    id: `adhoc-${slugify(location.label)}-${stableHash(`${location.lon},${location.lat}`)}`,
+    name: location.label,
+    lat: location.lat,
+    lon: location.lon,
+    radiusKm: 14,
+    theater: "Ad hoc",
+  };
+}
+
+function isSameGeocodedLocation(surface: MapSurfaceDefinition, location: GeocodedLocation): boolean {
+  const sameLabel = surface.label.toLowerCase() === location.label.toLowerCase();
+  const sameCoordinates =
+    Math.abs(surface.target.lat - location.lat) < 0.01 &&
+    Math.abs(surface.target.lon - location.lon) < 0.01;
+
+  return sameLabel || sameCoordinates;
+}
+
+function slugify(value: string): string {
+  const slug = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32);
+  return slug || "location";
+}
+
+function stableHash(value: string): string {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(36);
 }
