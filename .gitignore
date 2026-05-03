@@ -1,0 +1,44 @@
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dependencies and package-manager cache
+node_modules/
+.pnpm-store/
+
+# Build/test output
+dist/
+build/
+coverage/
+.vite/
+.turbo/
+*.tsbuildinfo
+
+# Local databases and temporary runtime state
+*.sqlite
+*.sqlite3
+*.db
+tmp/
+temp/
+
+# Local hackathon/reference notes
+hack_resources.md
+palantir_aip_docs.md
+
+# Side projects intentionally excluded from this repo
+forge/
+gradient-bang/
