@@ -34,7 +34,7 @@ export function AgentRail({ agents }: AgentRailProps) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <div className="truncate text-sm font-semibold uppercase text-white">OPSEC Wing</div>
-              <div className="text-[10px] uppercase text-subtle-foreground">Palantir mock backend</div>
+              <div className="text-[10px] uppercase text-subtle-foreground">Mapbox live / AIP adapter</div>
             </div>
             <div className="mt-2 flex min-w-0 items-center gap-ui-xxs">
               <Badge variant="secondary" border="elbow" size="sm" className="bg-white/7 font-semibold">
@@ -59,11 +59,11 @@ export function AgentRail({ agents }: AgentRailProps) {
           </div>
           <dl className="grid grid-cols-[auto_1fr] gap-y-px text-[10px] uppercase">
             <dt className="text-muted-foreground">Mode</dt>
-            <dd className="text-right font-bold text-white">Demo</dd>
+            <dd className="text-right font-bold text-white">Live map</dd>
             <dt className="text-muted-foreground">Guard</dt>
             <dd className="text-right font-bold text-terminal">Human</dd>
             <dt className="text-muted-foreground">AIP</dt>
-            <dd className="text-right font-bold text-white">Mock</dd>
+            <dd className="text-right font-bold text-white">Adapter</dd>
           </dl>
         </div>
       </div>

@@ -1,6 +1,6 @@
 export type Severity = "critical" | "high" | "medium" | "low";
 
-export type CollectorSource = "adsb" | "exa" | "satellite" | "strava" | "palantir";
+export type CollectorSource = "adsb" | "exa" | "satellite" | "strava" | "palantir" | "mapbox";
 
 export type TaskState = "queued" | "running" | "complete" | "blocked";
 
@@ -41,7 +41,7 @@ export interface MapLayer {
   id: string;
   source: CollectorSource;
   label: string;
-  type: "heatmap" | "path" | "marker" | "polygon" | "footprint";
+  type: "column" | "heatmap" | "path" | "marker" | "polygon" | "footprint";
   visible: boolean;
   count: number;
   tone: "green" | "amber" | "red" | "blue";

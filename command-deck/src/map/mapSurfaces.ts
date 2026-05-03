@@ -1,4 +1,5 @@
-import { createMockReport, targets } from "../data/mockMission";
+import { createTargetContextReport } from "../data/locationContextReport";
+import { targets } from "../data/mockMission";
 import type { MissionReport, MissionTarget } from "../domain/types";
 import { buildInitialViewState } from "./mapConfig";
 
@@ -12,7 +13,7 @@ export interface MapSurfaceDefinition {
 }
 
 export const mapSurfaces: MapSurfaceDefinition[] = targets.map((target, index) => {
-  const report = createMockReport(target.id);
+  const report = createTargetContextReport(target);
 
   return {
     id: target.id,
@@ -56,6 +57,19 @@ const locationQueryPatterns = [
 export function resolveTargetCommand(command: string): string | null {
   const normalized = normalizeCommand(command);
   const byName = mapSurfaces.find((surface) => surfaceMatchesCommand(surface, normalized));
+
+  return byName?.target.id ?? null;
+}
+
+export function resolveExactTargetCommand(command: string, surfaces = mapSurfaces): string | null {
+  const normalized = normalizeCommand(command);
+  if (!normalized) {
+    return null;
+  }
+
+  const byName = surfaces.find((surface) =>
+    getSurfaceAliases(surface).some((alias) => normalizeCommand(alias) === normalized)
+  );
 
   return byName?.target.id ?? null;
 }

@@ -13,7 +13,7 @@ import type { MapVisualModeId } from "./map/mapConfig";
 
 export function App() {
   const deck = useCommandDeck();
-  const [mapMode, setMapMode] = useState<MapVisualModeId>("dark");
+  const [mapMode, setMapMode] = useState<MapVisualModeId>("urban3d");
 
   useEffect(() => {
     const syncVisualViewportHeight = () => {

@@ -35,6 +35,7 @@ type SignalColumnDatum = TooltipRecord & {
   elevation: number;
   fillColor: Color;
   lineColor: Color;
+  radius?: number;
 };
 
 type PolygonFeature = {
@@ -57,6 +58,7 @@ const SOURCE_COLORS = {
   satellite: [112, 177, 255, 220],
   exa: [112, 240, 185, 215],
   palantir: [216, 232, 255, 220],
+  mapbox: [94, 234, 212, 225],
 } satisfies Record<CollectorSource, Color>;
 
 export function buildDeckLayers(params: {
@@ -118,6 +120,8 @@ function mapPayloadToDeckLayer(layer: MapLayer): Layer | null {
       return buildPolygonPayloadLayer(layer);
     case "heatmap":
       return buildHeatmapPayloadLayer(layer);
+    case "column":
+      return buildColumnPayloadLayer(layer);
     default:
       return null;
   }
@@ -128,14 +132,14 @@ function buildTargetRadiusLayer(target: MissionTarget) {
     {
       type: "Feature",
       properties: {
-        label: `${target.name} radius`,
-        detail: `${target.radiusKm} km assessment ring`,
+        label: `${target.name} AOI frame`,
+        detail: `${target.radiusKm} km angular area of interest`,
         lineColor: [232, 238, 226, 185],
-        fillColor: [232, 238, 226, 22],
+        fillColor: [232, 238, 226, 10],
       },
       geometry: {
         type: "Polygon",
-        coordinates: [buildCircleCoordinates([target.lon, target.lat], target.radiusKm)],
+        coordinates: [buildDiamondCoordinates([target.lon, target.lat], target.radiusKm)],
       },
     },
   ];
@@ -146,7 +150,7 @@ function buildTargetRadiusLayer(target: MissionTarget) {
     stroked: true,
     filled: true,
     getLineColor: [232, 238, 226, 185],
-    getFillColor: [232, 238, 226, 22],
+    getFillColor: [232, 238, 226, 10],
     getLineWidth: 2,
     lineWidthMinPixels: 2,
     pickable: true,
@@ -219,7 +223,7 @@ function buildMarkerPayloadLayer(layer: MapLayer) {
 function buildPathPayloadLayer(layer: MapLayer) {
   const color = SOURCE_COLORS[layer.source];
   const data = layer.data
-    .map((item, index) => {
+    .map<PathDatum | null>((item, index) => {
       const path = Array.isArray(item.path)
         ? item.path.map((point) => toLngLat(point)).filter((point): point is LngLat => point !== null)
         : [];
@@ -267,7 +271,7 @@ function buildPathPayloadLayer(layer: MapLayer) {
 function buildFootprintPayloadLayer(layer: MapLayer) {
   const color = SOURCE_COLORS[layer.source];
   const data = layer.data
-    .map((item, index) => {
+    .map<PolygonFeature | null>((item, index) => {
       const center = toLngLat(item.center);
       const radiusKm = asNumber(item.radiusKm);
       if (!center || radiusKm === null) {
@@ -311,7 +315,7 @@ function buildFootprintPayloadLayer(layer: MapLayer) {
 function buildPolygonPayloadLayer(layer: MapLayer) {
   const color = SOURCE_COLORS[layer.source];
   const data = layer.data
-    .map((item, index) => {
+    .map<PolygonFeature | null>((item, index) => {
       const coordinates = Array.isArray(item.coordinates)
         ? item.coordinates.map((point) => toLngLat(point)).filter((point): point is LngLat => point !== null)
         : [];
@@ -384,6 +388,51 @@ function buildHeatmapPayloadLayer(layer: MapLayer) {
   });
 }
 
+function buildColumnPayloadLayer(layer: MapLayer) {
+  const color = SOURCE_COLORS[layer.source];
+  const data = layer.data
+    .map<SignalColumnDatum | null>((item, index) => {
+      const position = toLngLat(item.position);
+      if (!position) {
+        return null;
+      }
+
+      return {
+        position,
+        elevation: asNumber(item.elevationMeters) ?? 760,
+        fillColor: parseColor(item.color) ?? ([color[0], color[1], color[2], 155] as Color),
+        lineColor: [255, 255, 255, 170] as Color,
+        radius: asNumber(item.radiusMeters) ?? 140,
+        label: asString(item.title) || asString(item.label) || `${layer.label} ${index + 1}`,
+        detail: asString(item.detail) || `${layer.source.toUpperCase()} 3D volume`,
+      } satisfies SignalColumnDatum;
+    })
+    .filter((item): item is SignalColumnDatum => item !== null);
+
+  if (data.length === 0) {
+    return null;
+  }
+
+  return new ColumnLayer<SignalColumnDatum>({
+    id: layer.id,
+    data,
+    autoHighlight: true,
+    coverage: 0.56,
+    diskResolution: 6,
+    elevationScale: 1,
+    extruded: true,
+    getElevation: (d) => d.elevation,
+    getFillColor: (d) => d.fillColor,
+    getLineColor: (d) => d.lineColor,
+    getPosition: (d) => d.position,
+    lineWidthMinPixels: 1,
+    pickable: true,
+    radius: Math.min(220, Math.max(...data.map((item) => item.radius ?? 140))),
+    stroked: true,
+    wireframe: true,
+  });
+}
+
 function buildFindingMarkerLayer(findings: Finding[]) {
   const data = findings
     .filter((finding) => typeof finding.lat === "number" && typeof finding.lon === "number")
@@ -427,8 +476,8 @@ function buildSignalColumnLayer(findings: Finding[], target: MissionTarget, visu
 
           return {
             position: [finding.lon!, finding.lat!] as LngLat,
-            elevation: 800 + severity * 720,
-            fillColor: [color[0], color[1], color[2], visualMode === "urban3d" ? 170 : 125],
+            elevation: 300 + severity * 180,
+            fillColor: [color[0], color[1], color[2], visualMode === "urban3d" ? 150 : 105],
             lineColor: [255, 255, 255, 165],
             label: finding.title,
             detail: `${finding.source.toUpperCase()} - ${finding.severity.toUpperCase()} vertical signal`,
@@ -437,8 +486,8 @@ function buildSignalColumnLayer(findings: Finding[], target: MissionTarget, visu
       : [
           {
             position: [target.lon, target.lat],
-            elevation: 1600,
-            fillColor: [220, 253, 56, visualMode === "urban3d" ? 155 : 115],
+            elevation: 680,
+            fillColor: [220, 253, 56, visualMode === "urban3d" ? 140 : 100],
             lineColor: [255, 255, 255, 165],
             label: target.name,
             detail: "Target focus signal column",
@@ -449,7 +498,7 @@ function buildSignalColumnLayer(findings: Finding[], target: MissionTarget, visu
     id: `${target.id}-signal-columns-${visualMode}`,
     data,
     autoHighlight: true,
-    coverage: visualMode === "urban3d" ? 0.82 : 0.7,
+    coverage: visualMode === "urban3d" ? 0.54 : 0.48,
     diskResolution: 6,
     elevationScale: visualMode === "urban3d" ? 1 : 0.72,
     extruded: true,
@@ -459,7 +508,7 @@ function buildSignalColumnLayer(findings: Finding[], target: MissionTarget, visu
     getPosition: (d) => d.position,
     lineWidthMinPixels: 1,
     pickable: true,
-    radius: visualMode === "urban3d" ? 260 : 360,
+    radius: visualMode === "urban3d" ? 110 : 140,
     stroked: true,
     wireframe: true,
   });
@@ -493,6 +542,20 @@ function buildCircleCoordinates(center: LngLat, radiusKm: number, steps = 56): L
   return points;
 }
 
+function buildDiamondCoordinates(center: LngLat, radiusKm: number): LngLat[] {
+  const [lon, lat] = center;
+  const latRadius = radiusKm / 111.32;
+  const lonRadius = radiusKm / (111.32 * Math.max(Math.cos((lat * Math.PI) / 180), 0.2));
+
+  return [
+    [lon, lat + latRadius],
+    [lon + lonRadius, lat],
+    [lon, lat - latRadius],
+    [lon - lonRadius, lat],
+    [lon, lat + latRadius],
+  ];
+}
+
 function toLngLat(value: unknown): LngLat | null {
   if (!Array.isArray(value) || value.length < 2) {
     return null;
@@ -514,6 +577,19 @@ function asNumber(value: unknown): number | null {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function parseColor(value: unknown): Color | null {
+  if (!Array.isArray(value) || value.length < 3) {
+    return null;
+  }
+
+  const [red, green, blue, alpha = 160] = value.map(Number);
+  if (![red, green, blue, alpha].every(Number.isFinite)) {
+    return null;
+  }
+
+  return [red, green, blue, alpha];
 }
 
 function extractTooltipRecord(value: unknown): TooltipRecord | null {

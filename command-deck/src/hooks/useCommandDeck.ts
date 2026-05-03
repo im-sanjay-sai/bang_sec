@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 
-import { createMockReportForTarget, defaultAgents, targets } from "../data/mockMission";
+import { createLocationContextReport, estimateRadiusKm } from "../data/locationContextReport";
+import { defaultAgents, targets } from "../data/mockMission";
 import type { AgentDescriptor, ConversationMessage, MissionReport, MissionTarget, TaskEvent } from "../domain/types";
 import { buildInitialViewState } from "../map/mapConfig";
 import {
@@ -10,6 +11,7 @@ import {
   getVisibleLayerIds,
   mapSurfaces as baseMapSurfaces,
   type MapSurfaceDefinition,
+  resolveExactTargetCommand,
   resolveMapSurfaceCommand,
   resolveTargetCommand,
 } from "../map/mapSurfaces";
@@ -25,7 +27,7 @@ const bootEvents: TaskEvent[] = [
     at: now(),
     agent: "system",
     state: "complete",
-    message: "Command deck initialized with mock Palantir adapter."
+    message: "Command deck initialized with live Mapbox context and mock Palantir adapter."
   }
 ];
 
@@ -95,7 +97,7 @@ export function useCommandDeck() {
         return false;
       }
 
-      const knownSurfaceId = resolveTargetCommand(trimmed) ?? resolveMapSurfaceCommand(`show ${trimmed}`);
+      const knownSurfaceId = resolveExactTargetCommand(trimmed, surfaces);
       if (knownSurfaceId) {
         const surface = getMapSurface(knownSurfaceId, surfaces);
         setActiveMapSurfaceId(surface.id);
@@ -161,7 +163,7 @@ export function useCommandDeck() {
 
       const nextReport = isBaseTarget(target.id)
         ? await palantirBackend.runAssessment(target.id)
-        : createMockReportForTarget(target);
+        : refreshReport(targetSurface.report);
       setActiveMapSurfaceIdState(target.id);
       setReport(nextReport);
       setActiveLayerIds(getVisibleLayerIds(nextReport));
@@ -231,12 +233,13 @@ export function useCommandDeck() {
       const matchedTarget = deckTargets.find((target) => target.id === matchedTargetId);
       const mapSurfaceId = resolveMapSurfaceCommand(command);
       const locationQuery = extractLocationQuery(trimmed);
+      const exactLocationTargetId = locationQuery ? resolveExactTargetCommand(locationQuery, surfaces) : null;
 
-      if (mapSurfaceId) {
-        const surface = getMapSurface(mapSurfaceId, surfaces);
-        setActiveMapSurfaceId(surface.id);
-        addMessage({ role: "voice-agent", text: `Displaying ${surface.label} map surface.` });
-        return;
+      if (locationQuery && !exactLocationTargetId && !isOrdinalLocationQuery(locationQuery)) {
+        const focused = await focusLocationByName(locationQuery);
+        if (focused) {
+          return;
+        }
       }
 
       if (command.includes("analyze") || command.includes("assess")) {
@@ -246,7 +249,14 @@ export function useCommandDeck() {
             return;
           }
         }
-        await runAssessment(matchedTarget?.id ?? selectedTargetId);
+        await runAssessment(exactLocationTargetId ?? matchedTarget?.id ?? selectedTargetId);
+        return;
+      }
+
+      if (exactLocationTargetId || mapSurfaceId) {
+        const surface = getMapSurface(exactLocationTargetId ?? mapSurfaceId!, surfaces);
+        setActiveMapSurfaceId(surface.id);
+        addMessage({ role: "voice-agent", text: `Displaying ${surface.label} map surface.` });
         return;
       }
       if (locationQuery) {
@@ -311,7 +321,7 @@ function isBaseTarget(targetId: string): boolean {
 
 function buildAdHocSurface(location: GeocodedLocation, order: number): MapSurfaceDefinition {
   const target = buildAdHocTarget(location);
-  const report = createMockReportForTarget(target);
+  const report = createLocationContextReport(target, location);
 
   return {
     id: target.id,
@@ -329,9 +339,21 @@ function buildAdHocTarget(location: GeocodedLocation): MissionTarget {
     name: location.label,
     lat: location.lat,
     lon: location.lon,
-    radiusKm: 14,
-    theater: "Ad hoc",
+    radiusKm: estimateRadiusKm(location),
+    theater: location.placeType,
   };
+}
+
+function refreshReport(report: MissionReport): MissionReport {
+  return {
+    ...report,
+    runId: `run-${report.target.id}-${Date.now().toString(36)}`,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function isOrdinalLocationQuery(query: string): boolean {
+  return /^(one|two|three|1|2|3|first|second|third)$/.test(query.trim().toLowerCase());
 }
 
 function isSameGeocodedLocation(surface: MapSurfaceDefinition, location: GeocodedLocation): boolean {

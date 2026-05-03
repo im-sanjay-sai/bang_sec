@@ -1,4 +1,5 @@
-import { createMockReport, targets } from "../data/mockMission";
+import { createTargetContextReport } from "../data/locationContextReport";
+import { targets } from "../data/mockMission";
 import type { AipSyncReceipt, MissionReport, MissionTarget } from "../domain/types";
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -19,7 +20,8 @@ export class MockPalantirBackend implements PalantirBackend {
 
   async runAssessment(targetId: string): Promise<MissionReport> {
     await wait(640);
-    return createMockReport(targetId);
+    const target = targets.find((item) => item.id === targetId) ?? targets[0];
+    return createTargetContextReport(target);
   }
 
   async syncAssessment(report: MissionReport): Promise<AipSyncReceipt> {

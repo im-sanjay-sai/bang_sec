@@ -67,12 +67,26 @@ export function uses3dBuildings(mode: MapVisualModeId): boolean {
 
 export function buildInitialViewState(target: MissionTarget): MapViewState {
   const radius = Math.max(target.radiusKm, 1);
+  const zoom =
+    radius <= 2
+      ? 14.2
+      : radius <= 5
+        ? 12.8
+        : radius <= 12
+          ? 11.2
+          : radius > 50
+            ? 7.4
+            : radius > 28
+              ? 8.4
+              : radius > 20
+                ? 9
+                : 10;
 
   return {
     longitude: target.lon,
     latitude: target.lat,
-    zoom: radius > 28 ? 8.4 : radius > 20 ? 9 : 9.6,
-    pitch: 58,
+    zoom,
+    pitch: radius <= 5 ? 66 : 58,
     bearing: -18,
   };
 }

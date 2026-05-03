@@ -51,7 +51,7 @@ export function IntelPanel({ report, onAnalyze, onAskAip, onReview, onSync }: In
               <Badge variant="ghost" border="bracket" className="mx-auto">
                 No active assessment
               </Badge>
-              <p className="m-0 max-w-sm text-sm leading-6 text-muted-foreground">Use the cockpit channel to start a mock Palantir-backed assessment.</p>
+              <p className="m-0 max-w-sm text-sm leading-6 text-muted-foreground">Use the cockpit channel to load live map context or start an AIP-backed assessment.</p>
             </section>
           )}
           </div>
@@ -122,7 +122,7 @@ function IntelPanelContent({
         <section className="grid gap-ui-xs bg-background p-ui-xs">
           <PanelTitle>Backend Path</PanelTitle>
           <p className="m-0 border-l-2 border-terminal pl-ui-xs text-sm leading-6 text-muted-foreground">
-            This panel is wired to the mock Palantir adapter now, with the same UI surface ready for Ontology actions, AIP prompts, and writeback receipts.
+            This panel is wired through the Palantir adapter boundary, with live map context available now and Ontology actions, AIP prompts, and writeback receipts ready to bind.
           </p>
           <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-ui-xs border border-border bg-subtle-background/40 p-ui-xs">
             <ShieldCheckIcon className="text-success" weight="bold" />
