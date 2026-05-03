@@ -9,11 +9,61 @@ import { TacticalMap } from "./components/TacticalMap";
 import { TopBar } from "./components/TopBar";
 import { Divider } from "./components/primitives/Divider";
 import { useCommandDeck } from "./hooks/useCommandDeck";
-import type { MapVisualModeId } from "./map/mapConfig";
+import { mapVisualModes, type MapVisualModeId } from "./map/mapConfig";
+import {
+  VOICE_DECK_ACTION_RESULT_MESSAGE,
+  createVoiceDeckState,
+  normalizeMapMode,
+  type VoiceDeckAction,
+  type VoiceDeckActionResult,
+} from "./services/voiceDeckProtocol";
 
 export function App() {
   const deck = useCommandDeck();
   const [mapMode, setMapMode] = useState<MapVisualModeId>("urban3d");
+
+  const buildVoiceState = (nextMapMode = mapMode) =>
+    createVoiceDeckState({
+      activeMapSurfaceId: deck.activeMapSurfaceId,
+      selectedTargetId: deck.selectedTargetId,
+      selectedTargetName: deck.selectedTarget.name,
+      mapMode: nextMapMode,
+      busy: deck.busy,
+      report: deck.report,
+      activeLayerIds: deck.activeLayerIds,
+      agents: deck.agents,
+    });
+
+  async function handleVoiceAction(action: VoiceDeckAction): Promise<VoiceDeckActionResult> {
+    if (action.action === "set_map_mode") {
+      const nextMode = normalizeMapMode(action.mapMode ?? action.text);
+      if (!nextMode) {
+        return {
+          type: VOICE_DECK_ACTION_RESULT_MESSAGE,
+          action: action.action,
+          requestId: action.requestId,
+          ok: false,
+          text: `Map mode ${String(action.mapMode ?? action.text ?? "requested")} is not available.`,
+          error: "Unknown map mode.",
+          state: buildVoiceState(),
+        };
+      }
+
+      setMapMode(nextMode);
+      const label = mapVisualModes.find((mode) => mode.id === nextMode)?.label ?? nextMode;
+      return {
+        type: VOICE_DECK_ACTION_RESULT_MESSAGE,
+        action: action.action,
+        requestId: action.requestId,
+        ok: true,
+        text: `Map mode set to ${label}.`,
+        state: buildVoiceState(nextMode),
+      };
+    }
+
+    const result = await deck.executeVoiceAction(action);
+    return { ...result, state: buildVoiceState() };
+  }
 
   useEffect(() => {
     const syncVisualViewportHeight = () => {
@@ -65,6 +115,8 @@ export function App() {
               onLocationChange={deck.setActiveMapSurfaceId}
               onLocationRequest={deck.focusLocationByName}
               onSend={deck.sendCommand}
+              onVoiceAction={handleVoiceAction}
+              onVoicePhaseChange={deck.setVoiceLoopPhase}
               busy={deck.busy}
             />
             <div className="relative hidden h-full overflow-hidden bracket-left bracket-offset-0 bracket-1 bracket-input bg-background @3xl/main:block">

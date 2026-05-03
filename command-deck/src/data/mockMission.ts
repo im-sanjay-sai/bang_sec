@@ -29,6 +29,13 @@ export const targets: MissionTarget[] = [
 
 export const defaultAgents: AgentDescriptor[] = [
   {
+    id: "system",
+    name: "System Agent",
+    role: "Runtime guard",
+    status: "idle",
+    currentTask: "Voice handoff guard armed"
+  },
+  {
     id: "voice",
     name: "Voice Agent",
     role: "Pipecat operator interface",

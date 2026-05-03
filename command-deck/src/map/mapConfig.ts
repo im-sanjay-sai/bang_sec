@@ -2,7 +2,7 @@ import type { MapViewState } from "@deck.gl/core";
 
 import type { MissionTarget } from "../domain/types";
 
-export const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
+export const MAPBOX_TOKEN = (import.meta.env.VITE_MAPBOX_TOKEN ?? import.meta.env.MAPBOX_TOKEN) as string | undefined;
 
 export const MAPBOX_STYLE =
   (import.meta.env.VITE_MAPBOX_STYLE as string | undefined) ?? "mapbox://styles/mapbox/dark-v11";

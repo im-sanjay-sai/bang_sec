@@ -183,6 +183,7 @@ function pipecatCloudStartPlugin(mode: string): PluginOption {
 }
 
 export default defineConfig(({ mode }) => ({
+  envPrefix: ["VITE_", "MAPBOX_"],
   plugins: [react(), tailwindcss(), pipecatCloudStartPlugin(mode)],
   resolve: {
     alias: {

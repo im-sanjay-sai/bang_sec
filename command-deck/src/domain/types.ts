@@ -4,7 +4,7 @@ export type CollectorSource = "adsb" | "exa" | "satellite" | "strava" | "palanti
 
 export type TaskState = "queued" | "running" | "complete" | "blocked";
 
-export type AgentStatus = "idle" | "listening" | "working" | "complete" | "blocked";
+export type AgentStatus = "idle" | "listening" | "hearing" | "thinking" | "speaking" | "working" | "complete" | "blocked";
 
 export type SyncState = "not_synced" | "syncing" | "synced" | "failed";
 

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 
 import { createLocationContextReport, estimateRadiusKm } from "../data/locationContextReport";
 import { defaultAgents, targets } from "../data/mockMission";
-import type { AgentDescriptor, ConversationMessage, MissionReport, MissionTarget, TaskEvent } from "../domain/types";
+import type { AgentDescriptor, ConversationMessage, MapLayer, MissionReport, MissionTarget, TaskEvent } from "../domain/types";
 import { buildInitialViewState } from "../map/mapConfig";
 import {
   defaultMapSurfaceId,
@@ -17,6 +17,19 @@ import {
 } from "../map/mapSurfaces";
 import { palantirBackend } from "../services/palantirAdapter";
 import { geocodeLocationName, type GeocodedLocation } from "../services/geocoding";
+import {
+  askGhostlineVoiceServer,
+  createGhostlineMissionReport,
+  fetchGhostlineFullPicture,
+  formatGhostlineError,
+} from "../services/ghostlineVoiceAdapter";
+import {
+  VOICE_DECK_ACTION_RESULT_MESSAGE,
+  formatVoiceActionText,
+  type VoiceDeckAction,
+  type VoiceDeckActionResult,
+  type VoiceLoopPhase,
+} from "../services/voiceDeckProtocol";
 
 const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const uid = () => crypto.randomUUID();
@@ -73,6 +86,23 @@ export function useCommandDeck() {
   const setAgent = useCallback((id: string, patch: Partial<AgentDescriptor>) => {
     setAgents((current) => current.map((agent) => (agent.id === id ? { ...agent, ...patch } : agent)));
   }, []);
+
+  const setVoiceLoopPhase = useCallback(
+    (phase: VoiceLoopPhase) => {
+      const profile = getVoiceLoopProfile(phase);
+      setAgent("voice", profile);
+      if (phase === "connecting") {
+        setAgent("system", { status: "working", currentTask: "Starting RTVI voice loop" });
+      }
+      if (phase === "ready" || phase === "listening") {
+        setAgent("system", { status: "complete", currentTask: "Voice handoff guard armed" });
+      }
+      if (phase === "blocked") {
+        setAgent("system", { status: "blocked", currentTask: "Voice loop needs operator attention" });
+      }
+    },
+    [setAgent]
+  );
 
   const setActiveMapSurfaceId = useCallback(
     (surfaceId: string) => {
@@ -161,20 +191,33 @@ export function useCommandDeck() {
         await new Promise((resolve) => window.setTimeout(resolve, 360));
       }
 
-      const nextReport = isBaseTarget(target.id)
-        ? await palantirBackend.runAssessment(target.id)
-        : refreshReport(targetSurface.report);
-      setActiveMapSurfaceIdState(target.id);
-      setReport(nextReport);
-      setActiveLayerIds(getVisibleLayerIds(nextReport));
-      setAgent("fusion", { status: "complete", currentTask: "Assessment package ready" });
-      setAgent("voice", { status: "listening", currentTask: "Awaiting command" });
-      addEvent({ agent: "fusion", state: "complete", message: `${target.name} assessment generated.` });
-      addMessage({
-        role: "voice-agent",
-        text: `${target.name} exposure score is ${nextReport.score.aggregate}. ${nextReport.findings.length} findings are staged.`
-      });
-      setBusy(false);
+      try {
+        const nextReport =
+          (await loadGhostlineReport(target).catch((error: unknown) => {
+            addEvent({
+              agent: "aip",
+              state: "blocked",
+              message: `Ghostline voice server unavailable: ${formatGhostlineError(error)} Falling back to local adapter.`,
+            });
+            return null;
+          })) ??
+          (isBaseTarget(target.id)
+            ? await palantirBackend.runAssessment(target.id)
+            : refreshReport(targetSurface.report));
+
+        setActiveMapSurfaceIdState(target.id);
+        setReport(nextReport);
+        setActiveLayerIds(getVisibleLayerIds(nextReport));
+        setAgent("fusion", { status: "complete", currentTask: "Assessment package ready" });
+        setAgent("voice", { status: "listening", currentTask: "Awaiting command" });
+        addEvent({ agent: "fusion", state: "complete", message: `${nextReport.target.name} assessment generated.` });
+        addMessage({
+          role: "voice-agent",
+          text: `${nextReport.target.name} exposure score is ${nextReport.score.aggregate}. ${nextReport.findings.length} findings are staged.`
+        });
+      } finally {
+        setBusy(false);
+      }
     },
     [addEvent, addMessage, selectedTargetId, setAgent, surfaces]
   );
@@ -213,9 +256,16 @@ export function useCommandDeck() {
         return;
       }
       setAgent("aip", { status: "working", currentTask: "Answering ontology query" });
-      addEvent({ agent: "aip", state: "running", message: "Querying mock AIP context." });
-      const answer = await palantirBackend.askAip(report, prompt);
-      setAgent("aip", { status: "idle", currentTask: "Ontology writeback" });
+      addEvent({ agent: "aip", state: "running", message: "Querying Ghostline voice-server context." });
+      const answer = await askGhostlineVoiceServer(prompt, report.target.name).catch(async (error: unknown) => {
+        addEvent({
+          agent: "aip",
+          state: "blocked",
+          message: `Ghostline query unavailable: ${formatGhostlineError(error)} Falling back to mock AIP context.`,
+        });
+        return palantirBackend.askAip(report, prompt);
+      });
+      setAgent("aip", { status: "idle", currentTask: "Ontology query" });
       addMessage({ role: "voice-agent", text: answer });
     },
     [addEvent, addMessage, report, setAgent]
@@ -273,7 +323,16 @@ export function useCommandDeck() {
         await reviewTopFinding();
         return;
       }
-      if (command.includes("compare") || command.includes("aip")) {
+      if (
+        command.includes("compare") ||
+        command.includes("aip") ||
+        command.includes("cascade") ||
+        command.includes("adversary") ||
+        command.includes("mitigat") ||
+        command.includes("recommend") ||
+        command.includes("current state") ||
+        command.includes("live state")
+      ) {
         await askAip(trimmed);
         return;
       }
@@ -290,6 +349,123 @@ export function useCommandDeck() {
       current.includes(layerId) ? current.filter((id) => id !== layerId) : [...current, layerId]
     );
   }, []);
+
+  const executeVoiceAction = useCallback(
+    async (action: VoiceDeckAction): Promise<VoiceDeckActionResult> => {
+      const actionText = formatVoiceActionText(action);
+      setAgent("system", { status: "working", currentTask: actionText });
+      addEvent({ agent: "system", state: "running", message: actionText });
+
+      try {
+        let text = "";
+
+        switch (action.action) {
+          case "set_location": {
+            const surfaceId = resolveVoiceSurfaceId(action, surfaces);
+            if (surfaceId) {
+              const surface = getMapSurface(surfaceId, surfaces);
+              setActiveMapSurfaceId(surface.id);
+              text = `Loaded ${surface.label}.`;
+              break;
+            }
+
+            if (!action.locationName) {
+              throw new Error("No location was supplied.");
+            }
+
+            const focused = await focusLocationByName(action.locationName);
+            if (!focused) {
+              throw new Error(`Could not locate ${action.locationName}.`);
+            }
+
+            text = `Loaded ${action.locationName}.`;
+            break;
+          }
+
+          case "run_assessment": {
+            const surfaceId = resolveVoiceSurfaceId(action, surfaces);
+            const targetId = surfaceId ?? selectedTargetId;
+            const target = getMapSurface(targetId, surfaces).target;
+            await runAssessment(targetId);
+            text = `Assessment complete for ${target.name}.`;
+            break;
+          }
+
+          case "sync_to_aip":
+            await syncToAip();
+            text = "Sync action routed to the AIP worker.";
+            break;
+
+          case "review_top_finding":
+            await reviewTopFinding();
+            text = "Top finding review action routed.";
+            break;
+
+          case "ask_aip": {
+            const prompt = action.prompt ?? action.text ?? "Summarize active assessment for command review.";
+            await askAip(prompt);
+            text = "AIP query routed.";
+            break;
+          }
+
+          case "toggle_layer": {
+            const layer = resolveVoiceLayer(action, report);
+            if (!layer) {
+              throw new Error(`Layer ${action.layerLabel ?? action.layerId ?? "requested"} is not available.`);
+            }
+            toggleLayer(layer.id);
+            text = `Toggled ${layer.label}.`;
+            break;
+          }
+
+          case "get_deck_state":
+            text = report
+              ? `${report.target.name} is active. Score ${report.score.aggregate}. ${report.findings.length} findings staged.`
+              : "No assessment is loaded.";
+            break;
+
+          case "help":
+            text = "Voice controls available: set location, run assessment, sync, review top finding, ask AIP, toggle layers, and set map mode.";
+            addMessage({ role: "voice-agent", text });
+            break;
+
+          case "set_map_mode":
+            text = "Map mode action is handled by the command center shell.";
+            break;
+        }
+
+        setAgent("system", { status: "complete", currentTask: "Voice action committed" });
+        addEvent({ agent: "system", state: "complete", message: text });
+        return {
+          type: VOICE_DECK_ACTION_RESULT_MESSAGE,
+          action: action.action,
+          requestId: action.requestId,
+          ok: true,
+          text,
+        };
+      } catch (error) {
+        const text = error instanceof Error ? error.message : "Voice action failed.";
+        setAgent("system", { status: "blocked", currentTask: text });
+        addEvent({ agent: "system", state: "blocked", message: text });
+        return failVoiceAction(action, text);
+      }
+    },
+    [
+      addEvent,
+      addMessage,
+      askAip,
+      focusLocationByName,
+      report,
+      reviewTopFinding,
+      runAssessment,
+      selectedTargetId,
+      setActiveMapSurfaceId,
+      setAgent,
+      surfaces,
+      syncToAip,
+      toggleLayer,
+    ]
+  );
 
   return {
     activeLayerIds,
@@ -310,13 +486,85 @@ export function useCommandDeck() {
     sendCommand,
     setActiveMapSurfaceId,
     setSelectedTargetId,
+    setVoiceLoopPhase,
     syncToAip,
+    executeVoiceAction,
     toggleLayer
   };
 }
 
 function isBaseTarget(targetId: string): boolean {
   return targets.some((target) => target.id === targetId);
+}
+
+function getVoiceLoopProfile(phase: VoiceLoopPhase): Partial<AgentDescriptor> {
+  switch (phase) {
+    case "connecting":
+      return { status: "working", currentTask: "Connecting Pipecat room" };
+    case "ready":
+      return { status: "listening", currentTask: "Voice link ready" };
+    case "listening":
+      return { status: "listening", currentTask: "Listening for operator" };
+    case "hearing":
+      return { status: "hearing", currentTask: "Capturing operator turn" };
+    case "thinking":
+      return { status: "thinking", currentTask: "Resolving operator intent" };
+    case "speaking":
+      return { status: "speaking", currentTask: "Speaking response" };
+    case "muted":
+      return { status: "idle", currentTask: "Microphone muted" };
+    case "blocked":
+      return { status: "blocked", currentTask: "Voice loop blocked" };
+    case "offline":
+    default:
+      return { status: "idle", currentTask: "Voice disconnected" };
+  }
+}
+
+function failVoiceAction(action: VoiceDeckAction, text: string): VoiceDeckActionResult {
+  return {
+    type: VOICE_DECK_ACTION_RESULT_MESSAGE,
+    action: action.action,
+    requestId: action.requestId,
+    ok: false,
+    text,
+    error: text,
+  };
+}
+
+function resolveVoiceSurfaceId(action: VoiceDeckAction, surfaces: MapSurfaceDefinition[]): string | null {
+  const explicitId = action.surfaceId ?? action.targetId;
+  if (explicitId) {
+    const surface = surfaces.find((item) => item.id === explicitId || item.target.id === explicitId);
+    if (surface) {
+      return surface.id;
+    }
+  }
+
+  if (action.locationName) {
+    return resolveExactTargetCommand(action.locationName, surfaces);
+  }
+
+  return null;
+}
+
+function resolveVoiceLayer(action: VoiceDeckAction, report: MissionReport | null): MapLayer | null {
+  if (!report) {
+    return null;
+  }
+
+  const layerId = action.layerId?.toLowerCase();
+  const layerLabel = action.layerLabel?.toLowerCase();
+  return (
+    report.layers.find((layer) => layerId && layer.id.toLowerCase() === layerId) ??
+    report.layers.find((layer) => layerLabel && layer.label.toLowerCase() === layerLabel) ??
+    null
+  );
+}
+
+async function loadGhostlineReport(target: MissionTarget): Promise<MissionReport> {
+  const picture = await fetchGhostlineFullPicture(target.name);
+  return createGhostlineMissionReport(picture, target);
 }
 
 function buildAdHocSurface(location: GeocodedLocation, order: number): MapSurfaceDefinition {

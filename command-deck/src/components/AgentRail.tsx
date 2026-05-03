@@ -20,6 +20,7 @@ interface AgentRailProps {
 const icons = {
   aip: DatabaseIcon,
   fusion: CpuIcon,
+  system: ShieldIcon,
   voice: RadioIcon,
 };
 
@@ -69,10 +70,10 @@ export function AgentRail({ agents }: AgentRailProps) {
       </div>
 
       <div className="border-l border-border">
-        <div className="grid grid-cols-3">
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${Math.max(agents.length, 1)}, minmax(0, 1fr))` }}>
           {agents.map((agent) => {
             const Icon = icons[agent.id as keyof typeof icons] ?? RobotIcon;
-            const active = agent.status === "working" || agent.status === "listening";
+            const active = ["working", "listening", "hearing", "thinking", "speaking"].includes(agent.status);
             return (
               <Button
                 key={agent.id}
@@ -112,7 +113,7 @@ export function AgentRail({ agents }: AgentRailProps) {
                           ? "text-warning"
                           : agent.status === "complete"
                             ? "text-success"
-                            : agent.status === "listening"
+                            : ["listening", "hearing", "thinking", "speaking"].includes(agent.status)
                               ? "text-terminal"
                               : "text-muted-foreground"
                       }
@@ -124,7 +125,7 @@ export function AgentRail({ agents }: AgentRailProps) {
                     <span className="block truncate text-[11px] text-muted-foreground">{agent.currentTask}</span>
                   </div>
                   <Badge
-                    variant={agent.status === "working" ? "warning" : agent.status === "complete" ? "success" : "ghost"}
+                    variant={agent.status === "working" || agent.status === "thinking" ? "warning" : agent.status === "complete" ? "success" : "ghost"}
                     border="elbow"
                     size="sm"
                   >

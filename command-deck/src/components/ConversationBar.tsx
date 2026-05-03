@@ -11,6 +11,14 @@ import {
 } from "@pipecat-ai/client-react";
 
 import type { ConversationMessage } from "../domain/types";
+import {
+  VOICE_DECK_ACTION_RESULT_MESSAGE,
+  formatVoiceActionText,
+  normalizeVoiceDeckAction,
+  type VoiceDeckAction,
+  type VoiceDeckActionResult,
+  type VoiceLoopPhase,
+} from "../services/voiceDeckProtocol";
 import { cn } from "../utils/tailwind";
 import { Button } from "./primitives/Button";
 import { Divider } from "./primitives/Divider";
@@ -24,9 +32,20 @@ interface ConversationBarProps {
   onLocationChange?(surfaceId: string): void;
   onLocationRequest?(locationName: string): Promise<unknown> | unknown;
   onSend(text: string): Promise<void>;
+  onVoiceAction?(action: VoiceDeckAction): Promise<VoiceDeckActionResult> | VoiceDeckActionResult;
+  onVoicePhaseChange?(phase: VoiceLoopPhase): void;
 }
 
-export function ConversationBar({ className, busy, messages, onLocationChange, onLocationRequest, onSend }: ConversationBarProps) {
+export function ConversationBar({
+  className,
+  busy,
+  messages,
+  onLocationChange,
+  onLocationRequest,
+  onSend,
+  onVoiceAction,
+  onVoicePhaseChange,
+}: ConversationBarProps) {
   const pipecatClient = usePipecatClient();
   const transportState = usePipecatClientTransportState();
   const { enableMic, isMicEnabled } = usePipecatClientMicControl();
@@ -38,6 +57,7 @@ export function ConversationBar({ className, busy, messages, onLocationChange, o
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceConnecting, setVoiceConnecting] = useState(false);
   const [remoteMuted, setRemoteMuted] = useState(false);
+  const [voicePhase, setVoicePhaseState] = useState<VoiceLoopPhase>("offline");
 
   const isConnecting = voiceConnecting || ["authenticating", "authenticated", "connecting", "connected", "initializing"].includes(transportState);
   const isConnected = transportState === "ready";
@@ -46,15 +66,62 @@ export function ConversationBar({ className, busy, messages, onLocationChange, o
     if (!isConnected) {
       setRemoteMuted(false);
       lastVoiceCommandRef.current = null;
+      setVoicePhase(voiceConnecting ? "connecting" : "offline");
+      return;
     }
-  }, [isConnected]);
+
+    if (remoteMuted) {
+      setVoicePhase("muted");
+      return;
+    }
+
+    setVoicePhase(isMicEnabled ? "listening" : "ready");
+  }, [isConnected, isMicEnabled, remoteMuted, voiceConnecting]);
+
+  useRTVIClientEvent(RTVIEvent.Connected, () => {
+    setVoicePhase("connecting");
+  });
+
+  useRTVIClientEvent(RTVIEvent.Disconnected, () => {
+    setVoicePhase("offline");
+  });
+
+  useRTVIClientEvent(RTVIEvent.BotReady, () => {
+    setVoicePhase("ready");
+  });
+
+  useRTVIClientEvent(RTVIEvent.BotDisconnected, () => {
+    setVoicePhase("offline");
+  });
 
   useRTVIClientEvent(RTVIEvent.UserMuteStarted, () => {
     setRemoteMuted(true);
+    setVoicePhase("muted");
   });
 
   useRTVIClientEvent(RTVIEvent.UserMuteStopped, () => {
     setRemoteMuted(false);
+    setVoicePhase("listening");
+  });
+
+  useRTVIClientEvent(RTVIEvent.UserStartedSpeaking, () => {
+    setVoicePhase("hearing");
+  });
+
+  useRTVIClientEvent(RTVIEvent.UserStoppedSpeaking, () => {
+    setVoicePhase("thinking");
+  });
+
+  useRTVIClientEvent(RTVIEvent.BotLlmStarted, () => {
+    setVoicePhase("thinking");
+  });
+
+  useRTVIClientEvent(RTVIEvent.BotStartedSpeaking, () => {
+    setVoicePhase("speaking");
+  });
+
+  useRTVIClientEvent(RTVIEvent.BotStoppedSpeaking, () => {
+    setVoicePhase(isMicEnabled ? "listening" : "ready");
   });
 
   useRTVIClientEvent(RTVIEvent.UserTranscript, (transcript: TranscriptData) => {
@@ -73,14 +140,29 @@ export function ConversationBar({ className, busy, messages, onLocationChange, o
     }
 
     lastVoiceCommandRef.current = fingerprint;
+    if (isConnected) {
+      return;
+    }
+
     void onSend(text);
   });
 
   useRTVIClientEvent(RTVIEvent.Error, (message) => {
     setVoiceError(textFromUnknown(message.data) ?? "Pipecat voice pipeline reported an error.");
+    setVoicePhase("blocked");
   });
 
   useRTVIClientEvent(RTVIEvent.ServerMessage, (payload: unknown) => {
+    const action = normalizeVoiceDeckAction(payload);
+    if (action && onVoiceAction) {
+      appendServerMessage({
+        role: "voice-agent",
+        text: extractServerMessageText(payload) ?? formatVoiceActionText(action),
+      });
+      void executeVoiceAction(action);
+      return;
+    }
+
     const locationId = extractServerLocationId(payload);
     if (locationId) {
       onLocationChange?.(locationId);
@@ -95,15 +177,7 @@ export function ConversationBar({ className, busy, messages, onLocationChange, o
       return;
     }
 
-    setServerMessages((current) => [
-      ...current.slice(-5),
-      {
-        id: `pipecat-server-${Date.now()}`,
-        role: "voice-agent",
-        at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-        text
-      }
-    ]);
+    appendServerMessage({ role: "voice-agent", text });
   });
 
   const visibleMessages = [
@@ -204,6 +278,53 @@ export function ConversationBar({ className, busy, messages, onLocationChange, o
     }
   }
 
+  function setVoicePhase(phase: VoiceLoopPhase) {
+    setVoicePhaseState(phase);
+    onVoicePhaseChange?.(phase);
+  }
+
+  function appendServerMessage(message: Omit<ConversationMessage, "id" | "at">) {
+    setServerMessages((current) => [
+      ...current.slice(-5),
+      {
+        id: `pipecat-server-${Date.now()}-${current.length}`,
+        at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        ...message,
+      }
+    ]);
+  }
+
+  async function executeVoiceAction(action: VoiceDeckAction) {
+    if (!onVoiceAction) {
+      return;
+    }
+
+    setVoicePhase("thinking");
+    try {
+      const result = await onVoiceAction(action);
+      pipecatClient?.sendClientMessage(VOICE_DECK_ACTION_RESULT_MESSAGE, result);
+      appendServerMessage({
+        role: result.ok ? "system" : "system",
+        text: result.text,
+      });
+      setVoicePhase(result.ok ? (isMicEnabled ? "listening" : "ready") : "blocked");
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "Voice action failed.";
+      setVoiceError(text);
+      setVoicePhase("blocked");
+      const result: VoiceDeckActionResult = {
+        type: VOICE_DECK_ACTION_RESULT_MESSAGE,
+        action: action.action,
+        requestId: action.requestId,
+        ok: false,
+        text,
+        error: text,
+      };
+      pipecatClient?.sendClientMessage(VOICE_DECK_ACTION_RESULT_MESSAGE, result);
+      appendServerMessage({ role: "system", text });
+    }
+  }
+
   return (
     <section className={cn("relative flex h-full min-w-0 flex-col gap-ui-xs border border-border bg-background/90 p-ui-xs shadow-[0_-12px_24px_rgb(0_0_0_/_0.35)]", className)}>
       <ScrollArea className="min-h-0 flex-1 mask-[linear-gradient(to_bottom,transparent_0px,black_34px)]">
@@ -236,6 +357,13 @@ export function ConversationBar({ className, busy, messages, onLocationChange, o
         </div>
       </ScrollArea>
 
+      <div className="flex items-center justify-between gap-ui-xs border border-border bg-background/55 px-2 py-1 font-mono text-[10px] uppercase text-muted-foreground">
+        <span>RTVI {transportState}</span>
+        <span className={voicePhase === "blocked" ? "text-destructive" : voicePhase === "speaking" || voicePhase === "listening" ? "text-terminal" : "text-muted-foreground"}>
+          {voicePhaseLabel(voicePhase)}
+        </span>
+      </div>
+
       <form className="flex items-center gap-ui-xxs" onSubmit={handleSubmit}>
         <Button
           aria-label={isConnected && remoteMuted ? "Microphone muted by Pipecat, please wait" : isConnected ? "Toggle Pipecat microphone" : "Connect Pipecat voice"}
@@ -263,7 +391,7 @@ export function ConversationBar({ className, busy, messages, onLocationChange, o
             <MicrophoneIcon weight="bold" />
           )}
           <span className="hidden @md/main:inline">
-            {isConnecting ? "Connecting" : isConnected && remoteMuted ? "Please wait" : isConnected ? (isMicEnabled ? "Live voice" : "Muted") : "Connect voice"}
+            {isConnecting ? "Connecting" : isConnected && remoteMuted ? "Please wait" : isConnected ? voicePhaseLabel(voicePhase) : "Connect voice"}
           </span>
         </Button>
         {isConnected ? (
@@ -387,6 +515,30 @@ function extractServerLocationName(payload: unknown): string | null {
 
 function extractServerMessageData(payload: unknown): unknown {
   return isRecord(payload) && "data" in payload ? payload.data : payload;
+}
+
+function voicePhaseLabel(phase: VoiceLoopPhase): string {
+  switch (phase) {
+    case "connecting":
+      return "Connecting";
+    case "ready":
+      return "Ready";
+    case "listening":
+      return "Listening";
+    case "hearing":
+      return "Hearing";
+    case "thinking":
+      return "Thinking";
+    case "speaking":
+      return "Speaking";
+    case "muted":
+      return "Guard muted";
+    case "blocked":
+      return "Blocked";
+    case "offline":
+    default:
+      return "Offline";
+  }
 }
 
 function mapPipecatMessage(message: PipecatConversationMessage, index: number): ConversationMessage {
