@@ -51,12 +51,111 @@ export const defaultAgents: AgentDescriptor[] = [
   }
 ];
 
-const baseLayers: MapLayer[] = [
-  { id: "layer-adsb", source: "adsb", label: "Aerial tracks", visible: true, count: 9, tone: "amber" },
-  { id: "layer-exa", source: "exa", label: "Public web hits", visible: true, count: 14, tone: "green" },
-  { id: "layer-satellite", source: "satellite", label: "Revisit windows", visible: true, count: 4, tone: "blue" },
-  { id: "layer-strava", source: "strava", label: "Movement heat", visible: false, count: 6, tone: "red" }
-];
+function offsetPoint(target: MissionTarget, eastKm: number, northKm: number): [number, number] {
+  const lonScale = 111.32 * Math.max(Math.cos((target.lat * Math.PI) / 180), 0.2);
+  return [target.lon + eastKm / lonScale, target.lat + northKm / 111.32];
+}
+
+function buildLayersForTarget(target: MissionTarget): MapLayer[] {
+  const inboundTrack = [
+    offsetPoint(target, -target.radiusKm * 0.82, -target.radiusKm * 0.38),
+    offsetPoint(target, -target.radiusKm * 0.34, -target.radiusKm * 0.12),
+    offsetPoint(target, target.radiusKm * 0.18, target.radiusKm * 0.14),
+    offsetPoint(target, target.radiusKm * 0.62, target.radiusKm * 0.34),
+  ];
+  const crossTrack = [
+    offsetPoint(target, -target.radiusKm * 0.18, target.radiusKm * 0.58),
+    offsetPoint(target, target.radiusKm * 0.1, target.radiusKm * 0.18),
+    offsetPoint(target, target.radiusKm * 0.48, -target.radiusKm * 0.2),
+  ];
+  const publicHits = [
+    offsetPoint(target, -target.radiusKm * 0.42, target.radiusKm * 0.16),
+    offsetPoint(target, target.radiusKm * 0.34, -target.radiusKm * 0.1),
+    offsetPoint(target, target.radiusKm * 0.12, target.radiusKm * 0.44),
+  ];
+  const heatPoints = [
+    offsetPoint(target, -target.radiusKm * 0.55, -target.radiusKm * 0.24),
+    offsetPoint(target, -target.radiusKm * 0.28, -target.radiusKm * 0.34),
+    offsetPoint(target, target.radiusKm * 0.08, -target.radiusKm * 0.18),
+    offsetPoint(target, target.radiusKm * 0.36, target.radiusKm * 0.08),
+    offsetPoint(target, target.radiusKm * 0.54, target.radiusKm * 0.26),
+  ];
+
+  return [
+    {
+      id: "layer-adsb",
+      source: "adsb",
+      label: "Aerial tracks",
+      type: "path",
+      visible: true,
+      count: 2,
+      tone: "amber",
+      data: [
+        {
+          flight: "OBS-214",
+          path: inboundTrack,
+          minDistanceKm: target.radiusKm * 0.32,
+          sampleCount: 18,
+        },
+        {
+          flight: "CIV-762",
+          path: crossTrack,
+          minDistanceKm: target.radiusKm * 0.48,
+          sampleCount: 11,
+        },
+      ],
+    },
+    {
+      id: "layer-exa",
+      source: "exa",
+      label: "Public web hits",
+      type: "marker",
+      visible: true,
+      count: publicHits.length,
+      tone: "green",
+      data: publicHits.map((position, index) => ({
+        position,
+        title: `Public-source hit ${index + 1}`,
+        detail: `${target.name} open-source reference cluster`,
+        radiusMeters: 560,
+      })),
+    },
+    {
+      id: "layer-satellite",
+      source: "satellite",
+      label: "Revisit windows",
+      type: "footprint",
+      visible: true,
+      count: 2,
+      tone: "blue",
+      data: [
+        {
+          center: offsetPoint(target, -target.radiusKm * 0.08, target.radiusKm * 0.08),
+          radiusKm: target.radiusKm * 0.74,
+          title: "Daylight revisit footprint",
+        },
+        {
+          center: offsetPoint(target, target.radiusKm * 0.24, -target.radiusKm * 0.12),
+          radiusKm: target.radiusKm * 0.42,
+          title: "Secondary collection window",
+        },
+      ],
+    },
+    {
+      id: "layer-strava",
+      source: "strava",
+      label: "Movement heat",
+      type: "heatmap",
+      visible: false,
+      count: heatPoints.length,
+      tone: "red",
+      data: heatPoints.map((position, index) => ({
+        position,
+        weight: 0.42 + index * 0.12,
+      })),
+    },
+  ];
+}
 
 const findingsByTarget: Record<string, Finding[]> = {
   "fort-liberty": [
@@ -191,10 +290,7 @@ export function createMockReport(targetId: string): MissionReport {
       aerial: target.id === "fort-liberty" ? 82 : 69
     },
     findings,
-    layers: baseLayers.map((layer) => ({
-      ...layer,
-      count: Math.max(1, layer.count - (target.id === "creech-afb" ? 4 : 0))
-    })),
+    layers: buildLayersForTarget(target),
     narrative:
       `${target.name} shows a defensible but non-trivial public exposure profile. ` +
       "The strongest signals are repeatability, public context around operational tempo, and collection-window overlap. " +

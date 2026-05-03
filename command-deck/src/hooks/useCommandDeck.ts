@@ -1,7 +1,13 @@
 import { useCallback, useMemo, useState } from "react";
 
-import { createMockReport, defaultAgents, targets } from "../data/mockMission";
+import { defaultAgents, targets } from "../data/mockMission";
 import type { AgentDescriptor, ConversationMessage, MissionReport, TaskEvent } from "../domain/types";
+import {
+  defaultMapSurfaceId,
+  getMapSurface,
+  getVisibleLayerIds,
+  resolveMapSurfaceCommand,
+} from "../map/mapSurfaces";
 import { palantirBackend } from "../services/palantirAdapter";
 
 const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -17,7 +23,8 @@ const bootEvents: TaskEvent[] = [
   }
 ];
 
-const initialReport = createMockReport(targets[0].id);
+const initialSurface = getMapSurface(defaultMapSurfaceId);
+const initialReport = initialSurface.report;
 
 const bootMessages: ConversationMessage[] = [
   {
@@ -29,11 +36,10 @@ const bootMessages: ConversationMessage[] = [
 ];
 
 export function useCommandDeck() {
-  const [selectedTargetId, setSelectedTargetId] = useState(targets[0].id);
+  const [selectedTargetId, setSelectedTargetId] = useState(initialSurface.target.id);
+  const [activeMapSurfaceId, setActiveMapSurfaceIdState] = useState(initialSurface.id);
   const [report, setReport] = useState<MissionReport | null>(initialReport);
-  const [activeLayerIds, setActiveLayerIds] = useState<string[]>(
-    initialReport.layers.filter((layer) => layer.visible).map((layer) => layer.id)
-  );
+  const [activeLayerIds, setActiveLayerIds] = useState<string[]>(getVisibleLayerIds(initialReport));
   const [events, setEvents] = useState<TaskEvent[]>(bootEvents);
   const [messages, setMessages] = useState<ConversationMessage[]>(bootMessages);
   const [agents, setAgents] = useState<AgentDescriptor[]>(defaultAgents);
@@ -55,6 +61,22 @@ export function useCommandDeck() {
   const setAgent = useCallback((id: string, patch: Partial<AgentDescriptor>) => {
     setAgents((current) => current.map((agent) => (agent.id === id ? { ...agent, ...patch } : agent)));
   }, []);
+
+  const setActiveMapSurfaceId = useCallback(
+    (surfaceId: string) => {
+      const surface = getMapSurface(surfaceId);
+      setActiveMapSurfaceIdState(surface.id);
+      setSelectedTargetId(surface.target.id);
+      setReport(surface.report);
+      setActiveLayerIds(getVisibleLayerIds(surface.report));
+      addEvent({
+        agent: "voice",
+        state: "complete",
+        message: `Displayed ${surface.label} deck.gl surface.`,
+      });
+    },
+    [addEvent]
+  );
 
   const runAssessment = useCallback(
     async (targetId = selectedTargetId) => {
@@ -78,8 +100,9 @@ export function useCommandDeck() {
       }
 
       const nextReport = await palantirBackend.runAssessment(target.id);
+      setActiveMapSurfaceIdState(target.id);
       setReport(nextReport);
-      setActiveLayerIds(nextReport.layers.filter((layer) => layer.visible).map((layer) => layer.id));
+      setActiveLayerIds(getVisibleLayerIds(nextReport));
       setAgent("fusion", { status: "complete", currentTask: "Assessment package ready" });
       setAgent("voice", { status: "listening", currentTask: "Awaiting command" });
       addEvent({ agent: "fusion", state: "complete", message: `${target.name} assessment generated.` });
@@ -143,6 +166,14 @@ export function useCommandDeck() {
       addMessage({ role: "operator", text: trimmed });
       const command = trimmed.toLowerCase();
       const matchedTarget = targets.find((target) => command.includes(target.name.toLowerCase()));
+      const mapSurfaceId = resolveMapSurfaceCommand(command);
+
+      if (mapSurfaceId) {
+        const surface = getMapSurface(mapSurfaceId);
+        setActiveMapSurfaceId(surface.id);
+        addMessage({ role: "voice-agent", text: `Displaying ${surface.label} map surface.` });
+        return;
+      }
 
       if (command.includes("analyze") || command.includes("assess")) {
         await runAssessment(matchedTarget?.id ?? selectedTargetId);
@@ -165,7 +196,7 @@ export function useCommandDeck() {
         text: "Command received. Available actions: analyze target, push to AIP, compare runs, review top finding."
       });
     },
-    [addMessage, askAip, reviewTopFinding, runAssessment, selectedTargetId, syncToAip]
+    [addMessage, askAip, reviewTopFinding, runAssessment, selectedTargetId, setActiveMapSurfaceId, syncToAip]
   );
 
   const toggleLayer = useCallback((layerId: string) => {
@@ -176,6 +207,7 @@ export function useCommandDeck() {
 
   return {
     activeLayerIds,
+    activeMapSurfaceId,
     agents,
     busy,
     events,
@@ -188,6 +220,7 @@ export function useCommandDeck() {
     reviewTopFinding,
     runAssessment,
     sendCommand,
+    setActiveMapSurfaceId,
     setSelectedTargetId,
     syncToAip,
     toggleLayer

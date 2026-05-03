@@ -41,9 +41,11 @@ export interface MapLayer {
   id: string;
   source: CollectorSource;
   label: string;
+  type: "heatmap" | "path" | "marker" | "polygon" | "footprint";
   visible: boolean;
   count: number;
   tone: "green" | "amber" | "red" | "blue";
+  data: Array<Record<string, unknown>>;
 }
 
 export interface TaskEvent {

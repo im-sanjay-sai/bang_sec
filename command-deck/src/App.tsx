@@ -36,7 +36,7 @@ export function App() {
         report={deck.report}
         selectedTargetId={deck.selectedTargetId}
         targets={deck.targets}
-        onTargetChange={deck.setSelectedTargetId}
+        onTargetChange={deck.setActiveMapSurfaceId}
         onRun={() => deck.runAssessment()}
         onSync={deck.syncToAip}
       />
@@ -44,7 +44,13 @@ export function App() {
       <section className="relative z-10 flex min-h-0 flex-1">
         <section className="flex min-h-0 min-w-0 flex-1 flex-col">
           <section className="relative min-h-0 flex-1 overflow-hidden bg-black">
-            <TacticalMap report={deck.report} activeLayerIds={deck.activeLayerIds} target={deck.selectedTarget} />
+            <TacticalMap
+              activeLayerIds={deck.activeLayerIds}
+              activeMapSurfaceId={deck.activeMapSurfaceId}
+              onSurfaceChange={deck.setActiveMapSurfaceId}
+              report={deck.report}
+              target={deck.selectedTarget}
+            />
             <ActivityStream events={deck.events} />
           </section>
 
