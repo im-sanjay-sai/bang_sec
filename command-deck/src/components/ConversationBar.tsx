@@ -1,5 +1,14 @@
 import { FormEvent, useRef, useState } from "react";
-import { MicrophoneIcon, PaperPlaneRightIcon } from "@phosphor-icons/react";
+import { MicrophoneIcon, MicrophoneSlashIcon, PaperPlaneRightIcon } from "@phosphor-icons/react";
+import { RTVIEvent } from "@pipecat-ai/client-js";
+import {
+  usePipecatClient,
+  usePipecatClientMicControl,
+  usePipecatClientTransportState,
+  usePipecatConversation,
+  useRTVIClientEvent,
+  type ConversationMessage as PipecatConversationMessage
+} from "@pipecat-ai/client-react";
 
 import type { ConversationMessage } from "../domain/types";
 import { cn } from "../utils/tailwind";
@@ -16,8 +25,51 @@ interface ConversationBarProps {
 }
 
 export function ConversationBar({ className, busy, messages, onSend }: ConversationBarProps) {
+  const pipecatClient = usePipecatClient();
+  const transportState = usePipecatClientTransportState();
+  const { enableMic, isMicEnabled } = usePipecatClientMicControl();
+  const { messages: pipecatMessages } = usePipecatConversation();
   const inputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState("");
+  const [serverMessages, setServerMessages] = useState<ConversationMessage[]>([]);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceConnecting, setVoiceConnecting] = useState(false);
+
+  const isConnecting = voiceConnecting || ["authenticating", "authenticated", "connecting", "connected", "initializing"].includes(transportState);
+  const isConnected = transportState === "ready";
+
+  useRTVIClientEvent(RTVIEvent.ServerMessage, (payload: unknown) => {
+    const text = extractServerMessageText(payload);
+    if (!text) {
+      return;
+    }
+
+    setServerMessages((current) => [
+      ...current.slice(-5),
+      {
+        id: `pipecat-server-${Date.now()}`,
+        role: "voice-agent",
+        at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        text
+      }
+    ]);
+  });
+
+  const visibleMessages = [
+    ...messages,
+    ...serverMessages,
+    ...pipecatMessages.map(mapPipecatMessage),
+    ...(voiceError
+      ? [
+          {
+            id: "pipecat-error",
+            role: "system" as const,
+            at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+            text: voiceError
+          }
+        ]
+      : [])
+  ];
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -26,15 +78,63 @@ export function ConversationBar({ className, busy, messages, onSend }: Conversat
       return;
     }
     setDraft("");
-    await onSend(text);
+    if (isConnected && pipecatClient) {
+      try {
+        await pipecatClient.sendText(text);
+      } catch (error) {
+        setVoiceError(error instanceof Error ? error.message : "Pipecat text send failed.");
+      }
+    } else {
+      await onSend(text);
+    }
     inputRef.current?.focus();
+  }
+
+  async function handleVoiceClick() {
+    setVoiceError(null);
+
+    if (!pipecatClient) {
+      setVoiceError("Pipecat client is not initialized.");
+      return;
+    }
+
+    if (isConnected) {
+      enableMic(!isMicEnabled);
+      return;
+    }
+
+    setVoiceConnecting(true);
+    try {
+      const response = await fetch("/api/pipecat/start", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          source: "opsec-command-deck",
+          mode: "palantir-opsec-demo"
+        })
+      });
+
+      const payload: unknown = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(formatPipecatStartError(payload, response.status));
+      }
+
+      await pipecatClient.connect(payload);
+      enableMic(true);
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : "Pipecat voice connection failed.");
+    } finally {
+      setVoiceConnecting(false);
+    }
   }
 
   return (
     <section className={cn("relative flex h-full min-w-0 flex-col gap-ui-xs border border-border bg-background/90 p-ui-xs shadow-[0_-12px_24px_rgb(0_0_0_/_0.35)]", className)}>
       <ScrollArea className="min-h-0 flex-1 mask-[linear-gradient(to_bottom,transparent_0px,black_34px)]">
         <div className="flex min-h-full flex-col justify-end gap-ui-xxs pr-ui-xs pt-8">
-          {messages.slice(-4).map((message) => (
+          {visibleMessages.slice(-4).map((message) => (
             <article className="flex items-start gap-1 text-xs" key={message.id}>
               <div
                 className={[
@@ -64,14 +164,31 @@ export function ConversationBar({ className, busy, messages, onSend }: Conversat
 
       <form className="flex items-center gap-ui-xxs" onSubmit={handleSubmit}>
         <Button
-          aria-label="Voice placeholder"
+          aria-label={isConnected ? "Toggle Pipecat microphone" : "Connect Pipecat voice"}
           className="h-9 min-w-9 px-0 @md/main:min-w-30 @md/main:px-3"
-          disabled
+          disabled={isConnecting}
+          isLoading={isConnecting}
+          loader="icon"
+          onClick={handleVoiceClick}
           type="button"
-          variant="micRemoteMuted"
+          variant={
+            isConnecting
+              ? "micLoading"
+              : isConnected
+                ? isMicEnabled
+                  ? "micEnabled"
+                  : "micDisabled"
+                : "micRemoteMuted"
+          }
         >
-          <MicrophoneIcon weight="bold" />
-          <span className="hidden @md/main:inline">Mock voice</span>
+          {isConnecting ? null : isConnected && !isMicEnabled ? (
+            <MicrophoneSlashIcon weight="bold" />
+          ) : (
+            <MicrophoneIcon weight="bold" />
+          )}
+          <span className="hidden @md/main:inline">
+            {isConnecting ? "Connecting" : isConnected ? (isMicEnabled ? "Live voice" : "Muted") : "Connect voice"}
+          </span>
         </Button>
         <div className="relative min-w-0 flex-1">
           <Input
@@ -100,4 +217,98 @@ export function ConversationBar({ className, busy, messages, onSend }: Conversat
       <Divider variant="dashed" className="h-1.5 text-foreground/30 hidden @md/main:block" />
     </section>
   );
+}
+
+function formatPipecatStartError(payload: unknown, status: number): string {
+  const fallback = `Pipecat voice start failed with HTTP ${status}.`;
+  if (!isRecord(payload)) {
+    return fallback;
+  }
+
+  for (const key of ["detail", "error", "message", "info"]) {
+    const text = textFromUnknown(payload[key]);
+    if (text) {
+      return text;
+    }
+  }
+
+  return fallback;
+}
+
+function textFromUnknown(value: unknown): string | null {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  for (const key of ["detail", "error", "message", "info"]) {
+    const nested = textFromUnknown(value[key]);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractServerMessageText(payload: unknown): string | null {
+  const data = isRecord(payload) && "data" in payload ? payload.data : payload;
+  const text = textFromUnknown(data);
+  if (text) {
+    return text;
+  }
+
+  if (isRecord(data)) {
+    for (const key of ["type", "status", "event"]) {
+      const label = typeof data[key] === "string" ? data[key] : null;
+      if (label) {
+        return label;
+      }
+    }
+  }
+
+  return null;
+}
+
+function mapPipecatMessage(message: PipecatConversationMessage, index: number): ConversationMessage {
+  return {
+    id: `pipecat-${message.createdAt}-${index}`,
+    role:
+      message.role === "user"
+        ? "operator"
+        : message.role === "assistant"
+          ? "voice-agent"
+          : "system",
+    at: new Date(message.updatedAt ?? message.createdAt).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    }),
+    text: message.parts.map((part) => partToText(part.text)).join(" ").trim()
+  };
+}
+
+function partToText(text: PipecatConversationMessage["parts"][number]["text"]): string {
+  if (typeof text === "string") {
+    return text;
+  }
+
+  if (typeof text === "number") {
+    return String(text);
+  }
+
+  if (text && typeof text === "object" && "spoken" in text && "unspoken" in text) {
+    const spoken = typeof text.spoken === "string" ? text.spoken : "";
+    const unspoken = typeof text.unspoken === "string" ? text.unspoken : "";
+    return `${spoken}${unspoken}`;
+  }
+
+  return "";
 }

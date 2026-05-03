@@ -1,0 +1,14 @@
+[project]
+name = "gradient-bang-dummy-agent"
+version = "0.1.0"
+description = "Minimal Pipecat Cloud agent for the OPSEC command deck hackathon UI"
+requires-python = ">=3.11"
+dependencies = [
+    "pipecat-ai[cartesia,daily,deepgram,openai,runner,silero]>=1.1.0,<1.2.0",
+    "pipecatcloud>=0.6.0",
+    "python-dotenv>=1.0.1",
+    "websockets>=14.0",
+]
+
+[dependency-groups]
+dev = []

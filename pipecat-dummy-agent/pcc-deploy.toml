@@ -1,0 +1,18 @@
+agent_name = "gradient-bang-bot"
+agent_profile = "agent-1x"
+secret_set = "command-deck-voice"
+
+[scaling]
+min_agents = 0
+max_agents = 2
+
+[build]
+context_dir = "."
+dockerfile = "Dockerfile"
+
+[build.exclude]
+patterns = [
+  ".venv/",
+  "__pycache__/",
+  ".ruff_cache/",
+]
